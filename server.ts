@@ -16,6 +16,8 @@ import {
   deleteMediaFromSupabase,
   registerSseClient,
   startSupabaseRealtimeBridge,
+  loadMasterAuthFromSupabase,
+  saveMasterAuthToSupabase,
 } from "./supabaseSync.ts";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -163,6 +165,46 @@ function getEnvMasterPassword(): string {
   return (process.env.MASTER_ADMIN_PASSWORD || "").trim();
 }
 
+async function resolveClaimedMaster(): Promise<ClaimedMaster | null> {
+  if (claimedMaster) return claimedMaster;
+
+  const store = readAuthStore();
+  if (
+    typeof store.email === "string" &&
+    store.email.trim().toLowerCase() === MASTER_ADMIN_EMAIL &&
+    typeof store.salt === "string" &&
+    typeof store.hash === "string" &&
+    store.salt &&
+    store.hash
+  ) {
+    claimedMaster = {
+      email: MASTER_ADMIN_EMAIL,
+      salt: store.salt,
+      hash: store.hash,
+    };
+    return claimedMaster;
+  }
+
+  const fromDb = await loadMasterAuthFromSupabase(MASTER_ADMIN_EMAIL);
+  if (fromDb) {
+    claimedMaster = fromDb;
+    try {
+      writeAuthStore({
+        email: fromDb.email,
+        salt: fromDb.salt,
+        hash: fromDb.hash,
+        sessionSecret: SESSION_SECRET,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch {
+      // Ignore read-only filesystem errors in stateless deployments
+    }
+    return claimedMaster;
+  }
+
+  return null;
+}
+
 function hashPassword(password: string): { salt: string; hash: string } {
   const salt = crypto.randomBytes(16).toString("hex");
   const hash = crypto.scryptSync(password, salt, 64).toString("hex");
@@ -258,9 +300,10 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: "256kb" }));
 
-  app.get("/api/auth/status", (req: Request, res: Response) => {
+  app.get("/api/auth/status", async (req: Request, res: Response) => {
     const envPw = getEnvMasterPassword();
-    const masterConfigured = Boolean(envPw || claimedMaster);
+    const resolvedMaster = envPw ? null : await resolveClaimedMaster();
+    const masterConfigured = Boolean(envPw || resolvedMaster);
     const needsMasterSetup = !masterConfigured;
     const token = extractBearerToken(req);
     const user = token ? verifyToken(token) : null;
@@ -284,9 +327,10 @@ async function startServer() {
     });
   });
 
-  app.post("/api/auth/setup-master", (req: Request, res: Response) => {
+  app.post("/api/auth/setup-master", async (req: Request, res: Response) => {
     const envPw = getEnvMasterPassword();
-    if (envPw || claimedMaster) {
+    const existingMaster = envPw ? null : await resolveClaimedMaster();
+    if (envPw || existingMaster) {
       return res.status(409).json({
         error: "ALREADY_CONFIGURED",
         message: "মাস্টার অ্যাডমিন পাসওয়ার্ড ইতিমধ্যেই সেট করা আছে।",
@@ -311,7 +355,10 @@ async function startServer() {
     }
 
     const { salt, hash } = hashPassword(password);
-    claimedMaster = { email: MASTER_ADMIN_EMAIL, salt, hash };
+    const nextMaster: ClaimedMaster = { email: MASTER_ADMIN_EMAIL, salt, hash };
+    claimedMaster = nextMaster;
+
+    let savedLocal = false;
     try {
       writeAuthStore({
         email: MASTER_ADMIN_EMAIL,
@@ -320,8 +367,14 @@ async function startServer() {
         sessionSecret: SESSION_SECRET,
         updatedAt: new Date().toISOString(),
       });
+      savedLocal = true;
     } catch (err) {
-      console.error("Failed to persist master auth store:", err);
+      console.error("Failed to persist local master auth store:", err);
+    }
+
+    const savedDb = await saveMasterAuthToSupabase(nextMaster);
+    if (!savedLocal && !savedDb) {
+      claimedMaster = null;
       return res.status(500).json({
         error: "PERSISTENCE_ERROR",
         message: "পাসওয়ার্ড সংরক্ষণ করা যায়নি। আবার চেষ্টা করুন।",
@@ -341,7 +394,7 @@ async function startServer() {
     return res.json({ token, user });
   });
 
-  app.post("/api/auth/login", (req: Request, res: Response) => {
+  app.post("/api/auth/login", async (req: Request, res: Response) => {
     const rawRole = typeof req.body?.role === "string" ? req.body.role.trim() : "";
     const rawId = typeof req.body?.id === "string" ? req.body.id.trim() : "";
     const password = typeof req.body?.password === "string" ? req.body.password : "";
@@ -366,7 +419,8 @@ async function startServer() {
       }
 
       const envPw = getEnvMasterPassword();
-      if (!envPw && !claimedMaster) {
+      const resolvedMaster = envPw ? null : await resolveClaimedMaster();
+      if (!envPw && !resolvedMaster) {
         return res.status(409).json({
           error: "MASTER_SETUP_REQUIRED",
           needsMasterSetup: true,
@@ -378,8 +432,8 @@ async function startServer() {
         ? verifyConstantTimeString(password, envPw)
         : verifyScryptPassword(
             password,
-            claimedMaster!.salt,
-            claimedMaster!.hash
+            resolvedMaster!.salt,
+            resolvedMaster!.hash
           );
 
       if (!isValid) {

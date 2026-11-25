@@ -321,6 +321,14 @@ create table if not exists public.school_media (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists public.app_auth_store (
+  id text primary key default 'master',
+  email text not null,
+  salt text not null,
+  hash text not null,
+  updated_at timestamptz not null default now()
+);
+
 -- পুরনো টেবিল থাকলে নতুন কলাম নিরাপদে যোগ করুন (Idempotent Upgrade)
 alter table public.school_settings add column if not exists principal_phone text default '';
 alter table public.school_settings add column if not exists id_logo text default '';
@@ -411,6 +419,7 @@ alter table public.expenses enable row level security;
 alter table public.office_docs enable row level security;
 alter table public.cost_types enable row level security;
 alter table public.student_costs enable row level security;
+alter table public.app_auth_store enable row level security;
 
 do $$
 declare
@@ -421,7 +430,7 @@ declare
     'teachers', 'notices', 'admissions', 'fees', 'attendance', 'results',
     'books', 'book_loans', 'transport_routes', 'departments', 'employees',
     'office_attendance', 'leaves', 'payroll', 'tasks', 'expenses',
-    'office_docs', 'cost_types', 'student_costs'
+    'office_docs', 'cost_types', 'student_costs', 'app_auth_store'
   ];
 begin
   foreach tbl in array tbls loop

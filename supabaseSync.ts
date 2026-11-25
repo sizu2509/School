@@ -339,7 +339,12 @@ export async function getSupabaseStatus() {
 
   try {
     const { error: stErr } = await client.storage.getBucket(STORAGE_BUCKET);
-    storageReady = !stErr;
+    if (!stErr) {
+      storageReady = true;
+    } else if (schemaReady) {
+      const { error: listErr } = await client.storage.from(STORAGE_BUCKET).list("", { limit: 1 });
+      storageReady = !listErr;
+    }
   } catch {
     storageReady = false;
   }
@@ -723,13 +728,19 @@ export async function loadFullSnapshot(includeOfficeSensitive: boolean) {
           date: String(r.exp_date || ""),
           note: String(r.note || ""),
         })),
-        officeDocs: docsRes.rows.map((r) => ({
-          id: String(r.id || ""),
-          title: String(r.title || ""),
-          category: String(r.category || ""),
-          date: String(r.doc_date || ""),
-          note: String(r.note || ""),
-        })),
+        officeDocs: docsRes.rows
+          .filter(
+            (r) =>
+              String(r.id || "") !== "__master_auth_v1__" &&
+              String(r.category || "") !== "__system_auth__"
+          )
+          .map((r) => ({
+            id: String(r.id || ""),
+            title: String(r.title || ""),
+            category: String(r.category || ""),
+            date: String(r.doc_date || ""),
+            note: String(r.note || ""),
+          })),
       },
     };
   } catch (err) {
@@ -1312,14 +1323,22 @@ export async function syncSlicesToSupabase(
       }
 
       if (Array.isArray(removals.officeDocs) && removals.officeDocs.length) {
-        await deleteIdsInChunks(client, "office_docs", removals.officeDocs);
-        touchedTables.push("office_docs");
+        const safeIds = removals.officeDocs.filter((id) => String(id || "") !== "__master_auth_v1__");
+        if (safeIds.length) {
+          await deleteIdsInChunks(client, "office_docs", safeIds);
+          touchedTables.push("office_docs");
+        }
       }
       if (Array.isArray(changes.officeDocs)) {
+        const safeDocs = (changes.officeDocs as Record<string, unknown>[]).filter(
+          (r) =>
+            String(r.id || "") !== "__master_auth_v1__" &&
+            String(r.category || "") !== "__system_auth__"
+        );
         await upsertInChunks(
           client,
           "office_docs",
-          (changes.officeDocs as Record<string, unknown>[]).map((r) => ({
+          safeDocs.map((r) => ({
             id: String(r.id || ""),
             title: String(r.title || ""),
             category: String(r.category || ""),
@@ -1604,3 +1623,109 @@ export function startSupabaseRealtimeBridge(): void {
     realtimeConnected = false;
   }
 }
+
+export interface StoredMasterCredential {
+  email: string;
+  salt: string;
+  hash: string;
+}
+
+export async function loadMasterAuthFromSupabase(
+  expectedEmail: string
+): Promise<StoredMasterCredential | null> {
+  const client = getSupabaseClient();
+  if (!client) return null;
+  const targetEmail = expectedEmail.trim().toLowerCase();
+
+  try {
+    const { data, error } = await client
+      .from("app_auth_store")
+      .select("id, email, salt, hash")
+      .eq("id", "master")
+      .maybeSingle();
+
+    if (!error && data) {
+      const email = String(data.email || "").trim().toLowerCase();
+      const salt = String(data.salt || "");
+      const hash = String(data.hash || "");
+      if (email === targetEmail && salt && hash) {
+        return { email, salt, hash };
+      }
+    }
+
+    if (error && !isSchemaMissingError(error)) {
+      return null;
+    }
+  } catch {
+    // Fall through to legacy office_docs fallback
+  }
+
+  try {
+    const { data, error } = await client
+      .from("office_docs")
+      .select("id, title, category, note")
+      .eq("id", "__master_auth_v1__")
+      .maybeSingle();
+
+    if (error || !data) return null;
+    if (String(data.category || "") !== "__system_auth__") return null;
+    const parsed = JSON.parse(String(data.note || "{}")) as Partial<StoredMasterCredential>;
+    const email = String(parsed.email || data.title || "").trim().toLowerCase();
+    const salt = String(parsed.salt || "");
+    const hash = String(parsed.hash || "");
+    if (email === targetEmail && salt && hash) {
+      return { email, salt, hash };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveMasterAuthToSupabase(
+  cred: StoredMasterCredential
+): Promise<boolean> {
+  const client = getSupabaseClient();
+  if (!client) return false;
+  const now = new Date().toISOString();
+  const cleanEmail = cred.email.trim().toLowerCase();
+
+  try {
+    const { error } = await client.from("app_auth_store").upsert(
+      {
+        id: "master",
+        email: cleanEmail,
+        salt: cred.salt,
+        hash: cred.hash,
+        updated_at: now,
+      },
+      { onConflict: "id" }
+    );
+    if (!error) return true;
+    if (!isSchemaMissingError(error)) return false;
+  } catch {
+    // Fall through to office_docs fallback when app_auth_store table is not yet created
+  }
+
+  try {
+    const { error } = await client.from("office_docs").upsert(
+      {
+        id: "__master_auth_v1__",
+        title: cleanEmail,
+        category: "__system_auth__",
+        doc_date: now.slice(0, 10),
+        note: JSON.stringify({
+          email: cleanEmail,
+          salt: cred.salt,
+          hash: cred.hash,
+        }),
+        updated_at: now,
+      },
+      { onConflict: "id" }
+    );
+    return !error;
+  } catch {
+    return false;
+  }
+}
+
