@@ -103,9 +103,23 @@ create table if not exists public.students (
 create table if not exists public.teachers (
   id text primary key,
   name text not null default '',
+  teacher_code text default '',
   subject text default '',
+  designation text default '',
   phone text default '',
+  email text default '',
   qualification text default '',
+  join_date text default '',
+  monthly_salary numeric not null default 0,
+  monthly_allowance numeric not null default 0,
+  class_teacher_class text default '',
+  class_teacher_section text default '',
+  teaching_classes jsonb not null default '[]'::jsonb,
+  teaching_assignments jsonb not null default '[]'::jsonb,
+  salary_history jsonb not null default '[]'::jsonb,
+  blood_group text default '',
+  address text default '',
+  status text default 'সক্রিয়',
   photo text default '',
   updated_at timestamptz not null default now()
 );
@@ -339,6 +353,20 @@ alter table public.subjects add column if not exists section text default 'স�
 alter table public.students add column if not exists photo text default '';
 alter table public.students add column if not exists admission_date text default '';
 alter table public.attendance add column if not exists scan_time text default '';
+alter table public.teachers add column if not exists teacher_code text default '';
+alter table public.teachers add column if not exists designation text default '';
+alter table public.teachers add column if not exists email text default '';
+alter table public.teachers add column if not exists join_date text default '';
+alter table public.teachers add column if not exists monthly_salary numeric not null default 0;
+alter table public.teachers add column if not exists monthly_allowance numeric not null default 0;
+alter table public.teachers add column if not exists class_teacher_class text default '';
+alter table public.teachers add column if not exists class_teacher_section text default '';
+alter table public.teachers add column if not exists teaching_classes jsonb not null default '[]'::jsonb;
+alter table public.teachers add column if not exists teaching_assignments jsonb not null default '[]'::jsonb;
+alter table public.teachers add column if not exists salary_history jsonb not null default '[]'::jsonb;
+alter table public.teachers add column if not exists blood_group text default '';
+alter table public.teachers add column if not exists address text default '';
+alter table public.teachers add column if not exists status text default 'সক্রিয়';
 
 -- পারফরম্যান্স ইনডেক্স
 create index if not exists idx_students_cls_section on public.students(cls, section);

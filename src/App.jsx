@@ -610,6 +610,446 @@ function decodeStudentQrPayload(raw, students) {
   }
   return null;
 }
+
+/* ---------- বিষয়ভিত্তিক শিক্ষক, কর্মজীবনের বেতন হিস্টোরি ও শ্রেণি অ্যাসাইনমেন্ট ---------- */
+function serviceDurationBn(joinDate) {
+  if (!joinDate || !/^\d{4}-\d{2}-\d{2}$/.test(joinDate)) return "—";
+  const j = new Date(joinDate + "T00:00:00");
+  const now = new Date();
+  if (isNaN(j.getTime()) || j > now) return "নতুন যোগদান";
+  let months = (now.getFullYear() - j.getFullYear()) * 12 + (now.getMonth() - j.getMonth());
+  if (now.getDate() < j.getDate()) months = Math.max(0, months - 1);
+  const yrs = Math.floor(months / 12);
+  const remM = months % 12;
+  if (yrs > 0 && remM > 0) return `${toBnNum(yrs)} বছর ${toBnNum(remM)} মাস`;
+  if (yrs > 0) return `${toBnNum(yrs)} বছর`;
+  return `${toBnNum(Math.max(1, remM))} মাস`;
+}
+
+function buildCareerSalaryHistory(joinDate, monthlySalary, monthlyAllowance, teacherId) {
+  const basic = Math.max(0, Number(monthlySalary) || 26000);
+  const allowance = Math.max(0, Number(monthlyAllowance) || 4500);
+  const startStr = /^\d{4}-\d{2}-\d{2}$/.test(String(joinDate || "")) ? joinDate : "2020-01-05";
+  const [sy, sm, sd] = startStr.split("-").map(Number);
+  const now = new Date();
+  const ey = now.getFullYear();
+  const em = now.getMonth() + 1;
+  if (!sy || !sm || sy > ey || (sy === ey && sm > em)) return [];
+
+  const entries = [];
+  let y = sy;
+  let m = sm;
+  let safety = 0;
+  while ((y < ey || (y === ey && m <= em)) && safety < 240) {
+    safety++;
+    const ym = `${y}-${String(m).padStart(2, "0")}`;
+    const payDay = y === sy && m === sm ? Math.min(28, Math.max(1, sd || 5)) : 5;
+    const date = `${ym}-${String(payDay).padStart(2, "0")}`;
+    const mName = BN_MONTHS[(m - 1) % 12] + " " + toBnNum(y);
+    // যোগদানের পর থেকে প্রতি বছর সাধারণ ইনক্রিমেন্ট হিসাব (যৌক্তিক ঐতিহাসিক ধাপ)
+    const yearsElapsed = Math.max(0, ey - y);
+    const histScale = Math.max(0.72, 1 - yearsElapsed * 0.03);
+    const monthBasic = Math.round((basic * histScale) / 100) * 100;
+    const monthAllow = Math.round((allowance * histScale) / 50) * 50;
+    let bonus = 0;
+    let note = "নিয়মিত মাসিক বেতন ও ভাতা";
+    if (m === 4) {
+      bonus = Math.round(monthBasic * 0.5);
+      note = "মাসিক বেতন-ভাতা + ঈদ-উল-ফিতর উৎসব বোনাস";
+    } else if (m === 7) {
+      bonus = Math.round(monthBasic * 0.5);
+      note = "মাসিক বেতন-ভাতা + ঈদ-উল-আযহা উৎসব বোনাস";
+    } else if (m === 1 && y === sy && m === sm) {
+      note = "যোগদানকালীন প্রথম মাসের বেতন ও ভাতা";
+    }
+    entries.push({
+      id: `sal-${teacherId || "t"}-${ym}`,
+      date,
+      month: mName,
+      basic: monthBasic,
+      allowance: monthAllow,
+      bonus,
+      deduction: 0,
+      note
+    });
+    m++;
+    if (m > 12) {
+      m = 1;
+      y++;
+    }
+  }
+  return entries.reverse();
+}
+
+const DEFAULT_TEACHERS_SEED = [
+  {
+    id: "t-bn-1", teacherCode: "TCH-101", name: "মোঃ আবুল কালাম আজাদ", designation: "সিনিয়র শিক্ষক",
+    subject: "আমার বাংলা বই ও আনন্দ পাঠ", additionalSubjects: ["বাংলা (চারুপাঠ)", "বাংলা (সপ্তবর্ণা)", "বাংলা (সাহিত্য কণিকা)"],
+    qualification: "এম.এ (বাংলা), বি.এড", phone: "01711-310101", email: "abulkalam@school.edu.bd", bloodGroup: "B+",
+    address: "স্টেশন রোড, সদর", joinDate: "2016-01-10", monthlySalary: 28000, monthlyAllowance: 5000,
+    classTeacherClass: "পঞ্চম", classTeacherSection: "ক",
+    teachingClasses: ["প্লে", "নার্সারি", "কেজি", "প্রথম", "দ্বিতীয়", "তৃতীয়", "চতুর্থ", "পঞ্চম", "ষষ্ঠ"],
+    teachingAssignments: [
+      { cls: "প্লে–পঞ্চম", section: "ক, খ, গ", subject: "আমার বাংলা বই" },
+      { cls: "ষষ্ঠ", section: "ক, খ", subject: "বাংলা (চারুপাঠ) ও আনন্দ পাঠ" }
+    ],
+    status: "সক্রিয়"
+  },
+  {
+    id: "t-bn-2", teacherCode: "TCH-102", name: "ড. ফাতেমা খাতুন", designation: "সহকারী অধ্যাপক",
+    subject: "বাংলা সাহিত্য, ব্যাকরণ ও নির্মিতি", additionalSubjects: ["বাংলা সাহিত্য ও সহপাঠ", "বাংলা ভাষার ব্যাকরণ ও নির্মিতি", "সাহিত্যপাঠ ও সহপাঠ (বাংলা ১ম ও ২য় পত্র)"],
+    qualification: "পিএইচ.ডি, এম.এ (বাংলা)", phone: "01812-310102", email: "fatema@school.edu.bd", bloodGroup: "O+",
+    address: "কলেজ পাড়া, সদর", joinDate: "2014-03-01", monthlySalary: 36000, monthlyAllowance: 6500,
+    classTeacherClass: "একাদশ", classTeacherSection: "মানবিক",
+    teachingClasses: ["সপ্তম", "অষ্টম", "নবম", "দশম", "একাদশ", "দ্বাদশ"],
+    teachingAssignments: [
+      { cls: "সপ্তম–অষ্টম", section: "সব শাখা", subject: "বাংলা সাহিত্য ও আনন্দ পাঠ" },
+      { cls: "নবম–দশম", section: "সব বিভাগ", subject: "বাংলা সাহিত্য, ব্যাকরণ ও নির্মিতি" },
+      { cls: "একাদশ–দ্বাদশ", section: "সব বিভাগ", subject: "বাংলা ১ম ও ২য় পত্র" }
+    ],
+    status: "সক্রিয়"
+  },
+  {
+    id: "t-en-1", teacherCode: "TCH-103", name: "নুসরাত জাহান", designation: "সিনিয়র শিক্ষক",
+    subject: "English for Today (প্রাথমিক)", additionalSubjects: ["English for Today (Pre-Primary)", "English for Today (Nursery)", "English for Today (KG)", "English for Today"],
+    qualification: "এম.এ (ইংরেজি), টিইএফএল", phone: "01913-310103", email: "nusrat@school.edu.bd", bloodGroup: "A+",
+    address: "শাপলা চত্বর, সদর", joinDate: "2018-02-05", monthlySalary: 27000, monthlyAllowance: 4500,
+    classTeacherClass: "চতুর্থ", classTeacherSection: "ক",
+    teachingClasses: ["প্লে", "নার্সারি", "কেজি", "প্রথম", "দ্বিতীয়", "তৃতীয়", "চতুর্থ", "পঞ্চম"],
+    teachingAssignments: [
+      { cls: "প্লে–পঞ্চম", section: "ক, খ, গ", subject: "English for Today" }
+    ],
+    status: "সক্রিয়"
+  },
+  {
+    id: "t-en-2", teacherCode: "TCH-104", name: "আব্দুল্লাহ আল মামুন", designation: "প্রভাষক",
+    subject: "English & Grammar (মাধ্যমিক-উচ্চমাধ্যমিক)", additionalSubjects: ["English for Today", "English Grammar and Composition", "English for Today (1st & 2nd Paper)"],
+    qualification: "এম.এ (ইংরেজি সাহিত্য)", phone: "01715-310104", email: "mamun@school.edu.bd", bloodGroup: "AB+",
+    address: "মসজিদ রোড, সদর", joinDate: "2015-07-12", monthlySalary: 34000, monthlyAllowance: 6000,
+    classTeacherClass: "অষ্টম", classTeacherSection: "ক",
+    teachingClasses: ["ষষ্ঠ", "সপ্তম", "অষ্টম", "নবম", "দশম", "একাদশ", "দ্বাদশ"],
+    teachingAssignments: [
+      { cls: "ষষ্ঠ–অষ্টম", section: "ক, খ, গ", subject: "English for Today" },
+      { cls: "নবম–দ্বাদশ", section: "সব বিভাগ", subject: "English 1st, 2nd Paper & Composition" }
+    ],
+    status: "সক্রিয়"
+  },
+  {
+    id: "t-math-1", teacherCode: "TCH-105", name: "মোছাঃ তাসলিমা আক্তার", designation: "সহকারী শিক্ষক",
+    subject: "প্রাথমিক গণিত", additionalSubjects: ["সহজ গণিত (প্রাথমিক)", "প্রাথমিক গণিত (নার্সারি)", "প্রাথমিক গণিত (কেজি)", "প্রাথমিক গণিত"],
+    qualification: "বি.এসসি (সম্মান), এম.এসসি (গণিত)", phone: "01614-310105", email: "taslima@school.edu.bd", bloodGroup: "O+",
+    address: "সবুজবাগ, সদর", joinDate: "2019-01-15", monthlySalary: 25500, monthlyAllowance: 4200,
+    classTeacherClass: "তৃতীয়", classTeacherSection: "ক",
+    teachingClasses: ["প্লে", "নার্সারি", "কেজি", "প্রথম", "দ্বিতীয়", "তৃতীয়", "চতুর্থ", "পঞ্চম"],
+    teachingAssignments: [
+      { cls: "প্লে–পঞ্চম", section: "ক, খ, গ", subject: "সহজ ও প্রাথমিক গণিত" }
+    ],
+    status: "সক্রিয়"
+  },
+  {
+    id: "t-math-2", teacherCode: "TCH-106", name: "মোঃ রফিকুল ইসলাম", designation: "জ্যেষ্ঠ প্রভাষক",
+    subject: "গণিত ও উচ্চতর গণিত", additionalSubjects: ["গণিত", "উচ্চতর গণিত", "উচ্চতর গণিত (১ম ও ২য় পত্র)"],
+    qualification: "এম.এসসি (ফলিত গণিত, ঢাবি)", phone: "01711-310106", email: "rafiq@school.edu.bd", bloodGroup: "A+",
+    address: "শিক্ষক আবাসন, সদর", joinDate: "2013-02-10", monthlySalary: 38000, monthlyAllowance: 7000,
+    classTeacherClass: "নবম", classTeacherSection: "সাইন্স",
+    teachingClasses: ["ষষ্ঠ", "সপ্তম", "অষ্টম", "নবম", "দশম", "একাদশ", "দ্বাদশ"],
+    teachingAssignments: [
+      { cls: "ষষ্ঠ–দশম", section: "সব শাখা", subject: "সাধারণ গণিত" },
+      { cls: "নবম–দ্বাদশ", section: "সাইন্স", subject: "উচ্চতর গণিত (১ম ও ২য় পত্র)" }
+    ],
+    status: "সক্রিয়"
+  },
+  {
+    id: "t-sci-1", teacherCode: "TCH-107", name: "রোমানা পারভীন", designation: "সহকারী শিক্ষক",
+    subject: "প্রাথমিক বিজ্ঞান ও পরিবেশ পরিচিতি", additionalSubjects: ["পরিবেশ পরিচিতি ও ছবি আঁকা", "পরিবেশ ও নৈতিক শিক্ষা", "সাধারণ বিজ্ঞান ও পরিবেশ", "প্রাথমিক বিজ্ঞান", "বিজ্ঞান (বাণিজ্য ও মানবিক)", "বিজ্ঞান (মানবিক)"],
+    qualification: "এম.এসসি (উদ্ভিদবিজ্ঞান), বি.এড", phone: "01819-310107", email: "romana@school.edu.bd", bloodGroup: "B+",
+    address: "নিউ মার্কেট রোড, সদর", joinDate: "2020-01-18", monthlySalary: 25000, monthlyAllowance: 4000,
+    classTeacherClass: "দ্বিতীয়", classTeacherSection: "ক",
+    teachingClasses: ["প্লে", "নার্সারি", "কেজি", "তৃতীয়", "চতুর্থ", "পঞ্চম", "নবম", "দশম"],
+    teachingAssignments: [
+      { cls: "প্লে–পঞ্চম", section: "ক, খ, গ", subject: "পরিবেশ ও প্রাথমিক বিজ্ঞান" },
+      { cls: "নবম–দশম", section: "ইকমার্স, মানবিক", subject: "সাধারণ বিজ্ঞান" }
+    ],
+    status: "সক্রিয়"
+  },
+  {
+    id: "t-phy", teacherCode: "TCH-108", name: "শারমিন আক্তার", designation: "জ্যেষ্ঠ প্রভাষক",
+    subject: "পদার্থবিজ্ঞান ও বিজ্ঞান", additionalSubjects: ["বিজ্ঞান", "পদার্থবিজ্ঞান", "পদার্থবিজ্ঞান (১ম ও ২য় পত্র)"],
+    qualification: "এম.এসসি (পদার্থবিজ্ঞান)", phone: "01712-310108", email: "sharmin@school.edu.bd", bloodGroup: "O+",
+    address: "কলেজ গেট, সদর", joinDate: "2016-08-01", monthlySalary: 34500, monthlyAllowance: 6000,
+    classTeacherClass: "দশম", classTeacherSection: "সাইন্স",
+    teachingClasses: ["ষষ্ঠ", "সপ্তম", "অষ্টম", "নবম", "দশম", "একাদশ", "দ্বাদশ"],
+    teachingAssignments: [
+      { cls: "ষষ্ঠ–অষ্টম", section: "ক, খ, গ", subject: "সাধারণ বিজ্ঞান" },
+      { cls: "নবম–দ্বাদশ", section: "সাইন্স", subject: "পদার্থবিজ্ঞান (১ম ও ২য় পত্র)" }
+    ],
+    status: "সক্রিয়"
+  },
+  {
+    id: "t-chem", teacherCode: "TCH-109", name: "ড. তানভীর আহমেদ", designation: "প্রভাষক",
+    subject: "রসায়ন", additionalSubjects: ["রসায়ন", "রসায়ন (১ম ও ২য় পত্র)", "বিজ্ঞান"],
+    qualification: "এম.এসসি, এম.ফিল (রসায়ন)", phone: "01911-310109", email: "tanvir@school.edu.bd", bloodGroup: "A-",
+    address: "তালতলা, সদর", joinDate: "2017-04-05", monthlySalary: 33500, monthlyAllowance: 5800,
+    classTeacherClass: "একাদশ", classTeacherSection: "সাইন্স",
+    teachingClasses: ["অষ্টম", "নবম", "দশম", "একাদশ", "দ্বাদশ"],
+    teachingAssignments: [
+      { cls: "নবম–দ্বাদশ", section: "সাইন্স", subject: "রসায়ন (১ম ও ২য় পত্র)" },
+      { cls: "অষ্টম", section: "ক, খ", subject: "বিজ্ঞান (রসায়ন অংশ)" }
+    ],
+    status: "সক্রিয়"
+  },
+  {
+    id: "t-bio", teacherCode: "TCH-110", name: "সানজিদা সুলতানা", designation: "প্রভাষক",
+    subject: "জীববিজ্ঞান", additionalSubjects: ["জীববিজ্ঞান", "জীববিজ্ঞান (১ম ও ২য় পত্র)"],
+    qualification: "এম.এসসি (প্রাণিবিজ্ঞান)", phone: "01515-310110", email: "sanjida@school.edu.bd", bloodGroup: "AB+",
+    address: "হসপিটাল রোড, সদর", joinDate: "2018-06-10", monthlySalary: 31500, monthlyAllowance: 5200,
+    classTeacherClass: "দ্বাদশ", classTeacherSection: "সাইন্স",
+    teachingClasses: ["নবম", "দশম", "একাদশ", "দ্বাদশ"],
+    teachingAssignments: [
+      { cls: "নবম–দ্বাদশ", section: "সাইন্স", subject: "জীববিজ্ঞান (১ম ও ২য় পত্র)" }
+    ],
+    status: "সক্রিয়"
+  },
+  {
+    id: "t-ict", teacherCode: "TCH-111", name: "রাকিব হাসান", designation: "প্রভাষক ও আইটি সমন্বয়ক",
+    subject: "তথ্য ও যোগাযোগ প্রযুক্তি (ICT) ও ডিজিটাল প্রযুক্তি", additionalSubjects: ["ডিজিটাল প্রযুক্তি", "তথ্য ও যোগাযোগ প্রযুক্তি (ICT)", "কম্পিউটার ল্যাব"],
+    qualification: "বি.এসসি (সিএসই), এম.এসসি (আইটি)", phone: "01718-310111", email: "rakib.ict@school.edu.bd", bloodGroup: "B+",
+    address: "টেকনিক্যাল মোড়, সদর", joinDate: "2019-09-01", monthlySalary: 32000, monthlyAllowance: 5500,
+    classTeacherClass: "সপ্তম", classTeacherSection: "ক",
+    teachingClasses: ["প্লে", "নার্সারি", "কেজি", "প্রথম", "দ্বিতীয়", "তৃতীয়", "চতুর্থ", "পঞ্চম", "ষষ্ঠ", "সপ্তম", "অষ্টম", "নবম", "দশম", "একাদশ", "দ্বাদশ"],
+    teachingAssignments: [
+      { cls: "ষষ্ঠ–অষ্টম", section: "ক, খ, গ", subject: "ডিজিটাল প্রযুক্তি" },
+      { cls: "নবম–দ্বাদশ", section: "সব বিভাগ", subject: "তথ্য ও যোগাযোগ প্রযুক্তি (ICT)" },
+      { cls: "প্লে–দ্বাদশ", section: "সব শাখা", subject: "কম্পিউটার ল্যাব" }
+    ],
+    status: "সক্রিয়"
+  },
+  {
+    id: "t-bgs", teacherCode: "TCH-112", name: "মোঃ মাহবুবুর রহমান", designation: "সিনিয়র শিক্ষক",
+    subject: "বাংলাদেশ ও বিশ্বপরিচয় ও ইতিহাস", additionalSubjects: ["বাংলাদেশ ও বিশ্বপরিচয়", "ইতিহাস ও সামাজিক বিজ্ঞান", "বাংলাদেশের ইতিহাস ও বিশ্বসভ্যতা", "ইতিহাস / ইসলামের ইতিহাস ও সংস্কৃতি"],
+    qualification: "এম.এস.এস (ইতিহাস), বি.এড", phone: "01815-310112", email: "mahbub@school.edu.bd", bloodGroup: "O+",
+    address: "পুরাতন বাজার, সদর", joinDate: "2015-01-20", monthlySalary: 29500, monthlyAllowance: 4800,
+    classTeacherClass: "ষষ্ঠ", classTeacherSection: "ক",
+    teachingClasses: ["তৃতীয়", "চতুর্থ", "পঞ্চম", "ষষ্ঠ", "সপ্তম", "অষ্টম", "নবম", "দশম", "একাদশ", "দ্বাদশ"],
+    teachingAssignments: [
+      { cls: "তৃতীয়–পঞ্চম", section: "সব শাখা", subject: "বাংলাদেশ ও বিশ্বপরিচয়" },
+      { cls: "ষষ্ঠ–অষ্টম", section: "সব শাখা", subject: "ইতিহাস ও সামাজিক বিজ্ঞান" },
+      { cls: "নবম–দ্বাদশ", section: "সাইন্স ও মানবিক", subject: "ইতিহাস ও বাংলাদেশ ও বিশ্বপরিচয়" }
+    ],
+    status: "সক্রিয়"
+  },
+  {
+    id: "t-acc", teacherCode: "TCH-113", name: "মোঃ কামরুজ্জামান", designation: "প্রভাষক",
+    subject: "হিসাববিজ্ঞান", additionalSubjects: ["হিসাববিজ্ঞান", "হিসাববিজ্ঞান (১ম ও ২য় পত্র)"],
+    qualification: "এম.বি.এ (অ্যাকাউন্টিং)", phone: "01714-310113", email: "kamrul@school.edu.bd", bloodGroup: "A+",
+    address: "কোর্ট রোড, সদর", joinDate: "2017-01-15", monthlySalary: 32500, monthlyAllowance: 5400,
+    classTeacherClass: "নবম", classTeacherSection: "ইকমার্স",
+    teachingClasses: ["নবম", "দশম", "একাদশ", "দ্বাদশ"],
+    teachingAssignments: [
+      { cls: "নবম–দ্বাদশ", section: "ইকমার্স", subject: "হিসাববিজ্ঞান (১ম ও ২য় পত্র)" }
+    ],
+    status: "সক্রিয়"
+  },
+  {
+    id: "t-bus", teacherCode: "TCH-114", name: "ফারহানা ইয়াসমিন", designation: "প্রভাষক",
+    subject: "ব্যবসায় উদ্যোগ, ব্যবস্থাপনা ও ফিন্যান্স", additionalSubjects: ["ব্যবসায় উদ্যোগ", "ফিন্যান্স ও ব্যাংকিং", "ব্যবসায় সংগঠন ও ব্যবস্থাপনা (১ম ও ২য় পত্র)", "ফিন্যান্স, ব্যাংকিং ও বিমা (১ম ও ২য় পত্র)"],
+    qualification: "এম.বি.এ (ফিন্যান্স ও ব্যাংকিং)", phone: "01916-310114", email: "farhana@school.edu.bd", bloodGroup: "B+",
+    address: "ব্যাংক কলোনি, সদর", joinDate: "2019-03-10", monthlySalary: 31000, monthlyAllowance: 5000,
+    classTeacherClass: "দশম", classTeacherSection: "ইকমার্স",
+    teachingClasses: ["নবম", "দশম", "একাদশ", "দ্বাদশ"],
+    teachingAssignments: [
+      { cls: "নবম–দশম", section: "ইকমার্স", subject: "ব্যবসায় উদ্যোগ ও ফিন্যান্স ও ব্যাংকিং" },
+      { cls: "একাদশ–দ্বাদশ", section: "ইকমার্স", subject: "ব্যবসায় সংগঠন ও ফিন্যান্স (১ম ও ২য়)" }
+    ],
+    status: "সক্রিয়"
+  },
+  {
+    id: "t-econ", teacherCode: "TCH-115", name: "মোঃ শরিফুল ইসলাম", designation: "প্রভাষক",
+    subject: "অর্থনীতি ও উৎপাদন ব্যবস্থাপনা", additionalSubjects: ["অর্থনীতি", "অর্থনীতি (১ম ও ২য় পত্র)", "উৎপাদন ব্যবস্থাপনা ও বিপণন / অর্থনীতি"],
+    qualification: "এম.এস.এস (অর্থনীতি)", phone: "01617-310115", email: "shariful@school.edu.bd", bloodGroup: "O-",
+    address: "উত্তরপাড়া, সদর", joinDate: "2020-02-01", monthlySalary: 30000, monthlyAllowance: 4800,
+    classTeacherClass: "একাদশ", classTeacherSection: "ইকমার্স",
+    teachingClasses: ["নবম", "দশম", "একাদশ", "দ্বাদশ"],
+    teachingAssignments: [
+      { cls: "নবম–দশম", section: "মানবিক", subject: "অর্থনীতি" },
+      { cls: "একাদশ–দ্বাদশ", section: "ইকমার্স ও মানবিক", subject: "অর্থনীতি ও উৎপাদন ব্যবস্থাপনা" }
+    ],
+    status: "সক্রিয়"
+  },
+  {
+    id: "t-civ", teacherCode: "TCH-116", name: "লায়লা আর্জুমান্দ", designation: "প্রভাষক",
+    subject: "পৌরনীতি, সুশাসন ও সমাজবিজ্ঞান", additionalSubjects: ["পৌরনীতি ও নাগরিকতা", "পৌরনীতি ও সুশাসন (১ম ও ২য় পত্র)", "সমাজবিজ্ঞান / সমাজকর্ম"],
+    qualification: "এম.এস.এস (রাষ্ট্রবিজ্ঞান ও সমাজবিজ্ঞান)", phone: "01719-310116", email: "laila@school.edu.bd", bloodGroup: "A+",
+    address: "কাজীপাড়া, সদর", joinDate: "2018-08-12", monthlySalary: 30500, monthlyAllowance: 4900,
+    classTeacherClass: "দশম", classTeacherSection: "মানবিক",
+    teachingClasses: ["নবম", "দশম", "একাদশ", "দ্বাদশ"],
+    teachingAssignments: [
+      { cls: "নবম–দশম", section: "মানবিক", subject: "পৌরনীতি ও নাগরিকতা" },
+      { cls: "একাদশ–দ্বাদশ", section: "মানবিক", subject: "পৌরনীতি, সুশাসন ও সমাজবিজ্ঞান" }
+    ],
+    status: "সক্রিয়"
+  },
+  {
+    id: "t-geo", teacherCode: "TCH-117", name: "মোঃ জাকির হোসেন", designation: "প্রভাষক",
+    subject: "ভূগোল, পরিবেশ ও যুক্তিবিদ্যা", additionalSubjects: ["ভূগোল ও পরিবেশ", "যুক্তিবিদ্যা / ভূগোল"],
+    qualification: "এম.এসসি (ভূগোল ও পরিবেশ)", phone: "01811-310117", email: "zakir@school.edu.bd", bloodGroup: "B-",
+    address: "শান্তিনগর, সদর", joinDate: "2021-01-10", monthlySalary: 29000, monthlyAllowance: 4600,
+    classTeacherClass: "দ্বাদশ", classTeacherSection: "মানবিক",
+    teachingClasses: ["নবম", "দশম", "একাদশ", "দ্বাদশ"],
+    teachingAssignments: [
+      { cls: "নবম–দশম", section: "মানবিক", subject: "ভূগোল ও পরিবেশ" },
+      { cls: "একাদশ–দ্বাদশ", section: "মানবিক", subject: "যুক্তিবিদ্যা ও ভূগোল" }
+    ],
+    status: "সক্রিয়"
+  },
+  {
+    id: "t-rel", teacherCode: "TCH-118", name: "মাওলানা হাফেজ মোঃ ইউসুফ আলী", designation: "সিনিয়র ধর্মীয় শিক্ষক",
+    subject: "ধর্ম ও নৈতিক শিক্ষা ও কোরআন শিক্ষা", additionalSubjects: ["ধর্ম ও নৈতিক শিক্ষা", "কোরআন শিক্ষা"],
+    qualification: "কামিল (হাদিস ও ফিকহ), হাফেজে কোরআন", phone: "01713-310118", email: "yousuf@school.edu.bd", bloodGroup: "O+",
+    address: "দারুল উলুম লেন, সদর", joinDate: "2012-05-01", monthlySalary: 29500, monthlyAllowance: 5000,
+    classTeacherClass: "পঞ্চম", classTeacherSection: "খ",
+    teachingClasses: ["প্লে", "নার্সারি", "কেজি", "প্রথম", "দ্বিতীয়", "তৃতীয়", "চতুর্থ", "পঞ্চম", "ষষ্ঠ", "সপ্তম", "অষ্টম", "নবম", "দশম"],
+    teachingAssignments: [
+      { cls: "কেজি–দশম", section: "সব শাখা", subject: "ধর্ম ও নৈতিক শিক্ষা" },
+      { cls: "প্লে–দ্বাদশ", section: "সব শাখা", subject: "কোরআন শিক্ষা" }
+    ],
+    status: "সক্রিয়"
+  },
+  {
+    id: "t-life", teacherCode: "TCH-119", name: "মোছাঃ নাফিসা তাবাসসুম", designation: "সহকারী শিক্ষক",
+    subject: "জীবন ও জীবিকা এবং স্বাস্থ্য সুরক্ষা", additionalSubjects: ["জীবন ও জীবিকা", "স্বাস্থ্য সুরক্ষা"],
+    qualification: "এম.এড, বি.এসসি (গার্হস্থ্য অর্থনীতি)", phone: "01914-310119", email: "nafisa@school.edu.bd", bloodGroup: "A+",
+    address: "আদর্শপাড়া, সদর", joinDate: "2021-07-04", monthlySalary: 24500, monthlyAllowance: 4000,
+    classTeacherClass: "প্রথম", classTeacherSection: "ক",
+    teachingClasses: ["প্রথম", "ষষ্ঠ", "সপ্তম", "অষ্টম"],
+    teachingAssignments: [
+      { cls: "ষষ্ঠ–অষ্টম", section: "ক, খ, গ", subject: "জীবন ও জীবিকা এবং স্বাস্থ্য সুরক্ষা" }
+    ],
+    status: "সক্রিয়"
+  },
+  {
+    id: "t-art", teacherCode: "TCH-120", name: "অনির্বাণ রায়", designation: "শিল্প ও সংস্কৃতি প্রশিক্ষক",
+    subject: "শিল্প ও সংস্কৃতি, সংগীত ও অভিনয়", additionalSubjects: ["শিল্প ও সংস্কৃতি", "আবৃত্তি", "গান", "অভিনয়", "নৃত্য", "ডিবেটিং"],
+    qualification: "বি.এফ.এ, এম.এফ.এ (চারুকলা ও সংগীত)", phone: "01816-310120", email: "anirban@school.edu.bd", bloodGroup: "AB-",
+    address: "শিল্পকলা রোড, সদর", joinDate: "2020-11-01", monthlySalary: 24000, monthlyAllowance: 3800,
+    classTeacherClass: "প্লে", classTeacherSection: "ক",
+    teachingClasses: ["প্লে", "নার্সারি", "কেজি", "প্রথম", "দ্বিতীয়", "তৃতীয়", "চতুর্থ", "পঞ্চম", "ষষ্ঠ", "সপ্তম", "অষ্টম", "নবম", "দশম", "একাদশ", "দ্বাদশ"],
+    teachingAssignments: [
+      { cls: "ষষ্ঠ–অষ্টম", section: "সব শাখা", subject: "শিল্প ও সংস্কৃতি" },
+      { cls: "প্লে–দ্বাদশ", section: "সব শাখা", subject: "আবৃত্তি, গান, অভিনয়, নৃত্য ও ডিবেটিং" }
+    ],
+    status: "সক্রিয়"
+  },
+  {
+    id: "t-pe", teacherCode: "TCH-121", name: "মোঃ সোহেল রানা", designation: "ক্রীড়া ও শরীরচর্চা শিক্ষক",
+    subject: "ক্রীড়া, সুইমিং ও জিম", additionalSubjects: ["স্পোর্টস", "সুইমিং", "জিম"],
+    qualification: "বি.পি.এড (শারীরিক শিক্ষা)", phone: "01716-310121", email: "sohel.sports@school.edu.bd", bloodGroup: "O+",
+    address: "স্টেডিয়াম পাড়া, সদর", joinDate: "2019-04-02", monthlySalary: 25000, monthlyAllowance: 4200,
+    classTeacherClass: "নার্সারি", classTeacherSection: "ক",
+    teachingClasses: ["প্লে", "নার্সারি", "কেজি", "প্রথম", "দ্বিতীয়", "তৃতীয়", "চতুর্থ", "পঞ্চম", "ষষ্ঠ", "সপ্তম", "অষ্টম", "নবম", "দশম", "একাদশ", "দ্বাদশ"],
+    teachingAssignments: [
+      { cls: "প্লে–দ্বাদশ", section: "সব শাখা", subject: "স্পোর্টস, সুইমিং ও জিম" }
+    ],
+    status: "সক্রিয়"
+  },
+  {
+    id: "t-lang", teacherCode: "TCH-122", name: "মেহজাবিন চৌধুরী", designation: "স্পোকেন ইংলিশ প্রশিক্ষক",
+    subject: "স্পোকেন ল্যাব", additionalSubjects: ["স্পোকেন ল্যাব"],
+    qualification: "এম.এ (ইএলটি), আইইএলটিএস ৮.০", phone: "01518-310122", email: "mehjabin@school.edu.bd", bloodGroup: "B+",
+    address: "লেক ভিউ রোড, সদর", joinDate: "2022-01-05", monthlySalary: 26000, monthlyAllowance: 4200,
+    classTeacherClass: "কেজি", classTeacherSection: "ক",
+    teachingClasses: ["প্লে", "নার্সারি", "কেজি", "প্রথম", "দ্বিতীয়", "তৃতীয়", "চতুর্থ", "পঞ্চম", "ষষ্ঠ", "সপ্তম", "অষ্টম", "নবম", "দশম", "একাদশ", "দ্বাদশ"],
+    teachingAssignments: [
+      { cls: "প্লে–দ্বাদশ", section: "সব শাখা", subject: "স্পোকেন ল্যাব" }
+    ],
+    status: "সক্রিয়"
+  }
+];
+
+function normalizeTeacherRecord(t, includeSalary) {
+  const seed = DEFAULT_TEACHERS_SEED.find(s => s.id === (t && t.id));
+  const base = { ...(seed || {}), ...(t || {}) };
+  const joinDate = /^\d{4}-\d{2}-\d{2}$/.test(String(base.joinDate || "")) ? base.joinDate : "2020-01-05";
+  const monthlySalary = Math.max(0, Number(base.monthlySalary) || 26000);
+  const monthlyAllowance = Math.max(0, Number(base.monthlyAllowance) || 4500);
+  const teachingClasses = Array.isArray(base.teachingClasses) && base.teachingClasses.length > 0
+    ? base.teachingClasses
+    : (seed ? [...seed.teachingClasses] : ["ষষ্ঠ", "সপ্তম", "অষ্টম"]);
+  const teachingAssignments = Array.isArray(base.teachingAssignments) && base.teachingAssignments.length > 0
+    ? base.teachingAssignments
+    : (seed ? seed.teachingAssignments : [{ cls: teachingClasses.join(", "), section: "সব শাখা", subject: base.subject || "সাধারণ" }]);
+  const out = {
+    id: base.id || uid(),
+    teacherCode: base.teacherCode || ("TCH-" + String(base.id || "100").replace(/\D/g, "").padStart(3, "0") || "TCH-100"),
+    name: base.name || "শিক্ষক",
+    designation: base.designation || "সহকারী শিক্ষক",
+    subject: base.subject || "সাধারণ",
+    additionalSubjects: Array.isArray(base.additionalSubjects) ? base.additionalSubjects : [],
+    qualification: base.qualification || "স্নাতকোত্তর",
+    phone: base.phone || "—",
+    email: base.email || "",
+    bloodGroup: base.bloodGroup || "",
+    address: base.address || "",
+    photo: base.photo || "",
+    joinDate,
+    classTeacherClass: base.classTeacherClass || "",
+    classTeacherSection: base.classTeacherSection || "",
+    teachingClasses,
+    teachingAssignments,
+    status: base.status || "সক্রিয়"
+  };
+  if (includeSalary) {
+    out.monthlySalary = monthlySalary;
+    out.monthlyAllowance = monthlyAllowance;
+    out.salaryHistory = Array.isArray(base.salaryHistory) && base.salaryHistory.length > 0
+      ? base.salaryHistory
+      : buildCareerSalaryHistory(joinDate, monthlySalary, monthlyAllowance, out.id);
+  }
+  return out;
+}
+
+function defaultSubjectTeachers(includeSalary) {
+  return DEFAULT_TEACHERS_SEED.map(t => normalizeTeacherRecord(t, includeSalary));
+}
+
+function teacherCoversSubject(teacher, subjectName) {
+  if (!teacher || !subjectName) return false;
+  const sub = String(subjectName).trim().toLowerCase();
+  const hay = [
+    teacher.subject,
+    ...(Array.isArray(teacher.additionalSubjects) ? teacher.additionalSubjects : []),
+    ...(Array.isArray(teacher.teachingAssignments) ? teacher.teachingAssignments.map(a => a.subject) : [])
+  ].filter(Boolean).join(" | ").toLowerCase();
+  if (hay.includes(sub)) return true;
+  // মূল শব্দ ম্যাচিং (যেমন "আমার বাংলা বই", "English for Today", "গণিত", "পদার্থবিজ্ঞান", "তথ্য ও যোগাযোগ প্রযুক্তি")
+  const keywords = sub.replace(/[()]/g, " ").split(/[\s,/—-]+/).filter(w => w.length >= 3);
+  return keywords.some(k => !["এবং", "ও", "পত্র", "শ্রেণি", "প্রাথমিক", "সাধারণ", "বই", "for", "today", "1st", "2nd", "paper", "and"].includes(k) && hay.includes(k));
+}
+
+function collectSchoolCoreSubjects(data) {
+  const seen = new Set();
+  const out = [];
+  const push = s => {
+    const clean = String(s || "").trim();
+    if (!clean || seen.has(clean)) return;
+    seen.add(clean);
+    out.push(clean);
+  };
+  Object.values(DEFAULT_BOARD_BOOKS).flat().forEach(b => push(b.title));
+  DEFAULT_EXTRA_ACTIVITIES.forEach(a => push(a));
+  ((data && data.subjects) || []).forEach(s => push(s && s.name));
+  return out;
+}
+
+function decodeTeacherQrPayload(raw, teachers) {
+  const txt = String(raw || "").trim();
+  if (!txt || !Array.isArray(teachers)) return null;
+  if (txt.toUpperCase().startsWith("TCHID:")) {
+    const id = txt.slice(6).trim();
+    return teachers.find(t => t.id === id) || { id, unknownTeacher: true };
+  }
+  return null;
+}
 /* ---------- শিক্ষার্থীর বার্ষিক খরচ (ভর্তি থেকে পুরো বছর) ---------- */
 const DEFAULT_COST_TYPES = [
   { id: "ct-admission", name: "ভর্তি ফি", amount: 5000 },
@@ -813,7 +1253,7 @@ function emptyData() {
       principalMsg: "শিক্ষাই জাতির মেরুদণ্ড। আমাদের লক্ষ্য প্রতিটি শিক্ষার্থীকে জ্ঞান, চরিত্র ও মানবিক মূল্যবোধে গড়ে তোলা — যাতে তারা আগামীর বাংলাদেশ গড়ার কারিগর হতে পারে।",
       fb: "", yt: "", ig: ""
     },
-    students, teachers: [], classes: defaultClasses(), subjects: defaultBoardSubjects(),
+    students, teachers: defaultSubjectTeachers(false), classes: defaultClasses(), subjects: defaultBoardSubjects(),
     notices: [], admissions: [], attendance: {}, attendanceTimes: {}, results: {},
     books: [], loans: [], routes: [],
     employees: [], departments: [], officeAttendance: {}, leaves: [], payroll: [], tasks: [], expenses: [], officeDocs: [],
@@ -833,12 +1273,7 @@ function sampleData() {
   };
   d.classes = defaultClasses();
   d.subjects = defaultBoardSubjects();
-  d.teachers = [
-    { id: "t1", name: "মোঃ রফিকুল ইসলাম", subject: "গণিত", phone: "01XXX-XXXXXX", qualification: "এম.এসসি (গণিত)", photo: "" },
-    { id: "t2", name: "ফাতেমা বেগম", subject: "বাংলা", phone: "01XXX-XXXXXX", qualification: "এম.এ (বাংলা)", photo: "" },
-    { id: "t3", name: "আব্দুল্লাহ আল মামুন", subject: "ইংরেজি", phone: "01XXX-XXXXXX", qualification: "এম.এ (ইংরেজি)", photo: "" },
-    { id: "t4", name: "শারমিন আক্তার", subject: "বিজ্ঞান", phone: "01XXX-XXXXXX", qualification: "এম.এসসি (পদার্থবিজ্ঞান)", photo: "" }
-  ];
+  d.teachers = defaultSubjectTeachers(true);
   d.costTypes = defaultCostTypes();
   const seeded = defaultStudentsData(d.costTypes);
   d.students = seeded.students;
@@ -913,6 +1348,7 @@ function Landing({ data, user, goConsole, openLogin, logout, openAdmission, toas
   const [slide, setSlide] = useState(0);
   const [page, setPage] = useState("home"); // home | notices | teachers | principal | contact
   const [openLandingSec, setOpenLandingSec] = useState(null);
+  const [publicTeacherId, setPublicTeacherId] = useState(null);
   const tRef = useRef(null);
   const heroSlides = useMemo(() => {
     const uploaded = (data.media || [])
@@ -962,9 +1398,12 @@ function Landing({ data, user, goConsole, openLogin, logout, openAdmission, toas
         : <div className="t-slider">
             <div className="t-track" ref={tRef}>
               {data.teachers.map(t => (
-                <div className="t-card" key={t.id}>
+                <div className="t-card clickable" key={t.id} onClick={() => setPublicTeacherId(t.id)} role="button" tabIndex={0} onKeyDown={e => { if (e.key === "Enter" || e.key === " ") setPublicTeacherId(t.id); }}>
                   {t.photo ? <img src={t.photo} alt={t.name} /> : <div className="t-avatar">{t.name.trim().charAt(0)}</div>}
-                  <h3>{t.name}</h3><p>{t.subject}</p><p>{t.qualification}</p>
+                  <h3>{t.name}</h3>
+                  <p style={{ color: "var(--brand)", fontWeight: 600 }}>{t.subject}</p>
+                  {t.classTeacherClass && <p style={{ fontSize: "12.5px" }}>শ্রেণি শিক্ষক: {t.classTeacherClass} ({t.classTeacherSection || "ক"})</p>}
+                  <p>{t.qualification}</p>
                 </div>
               ))}
             </div>
@@ -1304,9 +1743,26 @@ function Landing({ data, user, goConsole, openLogin, logout, openAdmission, toas
       </section></div>}
 
       {page === "teachers" && <div className="wrap"><section className="section">
-        <div className="sec-head"><h2>শিক্ষকবৃন্দ</h2><p>আমাদের শিক্ষকদের পরিচিতি</p></div><TeachersBlock />
+        <div className="sec-head"><h2>বিষয়ভিত্তিক শিক্ষকবৃন্দ</h2><p>প্রোফাইল দেখতে যেকোনো শিক্ষকের কার্ডে ক্লিক করুন</p></div><TeachersBlock />
         <div className="grid3" style={{ marginTop: 16 }}>
-          {data.teachers.map(t => <div className="card" key={t.id}><h3 style={{ margin: "0 0 3px" }}>{t.name}</h3><p style={{ margin: 0, color: "var(--ink2)", fontSize: "14.5px" }}>বিষয়: {t.subject}<br />যোগ্যতা: {t.qualification}<br />মোবাইল: {t.phone}</p></div>)}
+          {data.teachers.map(t => (
+            <div className="card teacher-grid-card" key={t.id} onClick={() => setPublicTeacherId(t.id)} role="button" tabIndex={0} onKeyDown={e => { if (e.key === "Enter" || e.key === " ") setPublicTeacherId(t.id); }}>
+              <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 8 }}>
+                {t.photo ? <img src={t.photo} alt={t.name} className="stu-ava" style={{ borderRadius: "50%" }} /> : <div className="stu-ava" style={{ borderRadius: "50%" }}>{t.name.trim().charAt(0)}</div>}
+                <div>
+                  <h3 style={{ margin: "0 0 2px", fontSize: 16.5 }}>{t.name}</h3>
+                  <div style={{ fontSize: "12.5px", color: "var(--muted)" }}>{t.designation || "সহকারী শিক্ষক"}</div>
+                </div>
+              </div>
+              <p style={{ margin: 0, color: "var(--ink2)", fontSize: "14px" }}>
+                <b>বিষয়:</b> {t.subject}<br />
+                <b>যোগদান:</b> {t.joinDate ? bnDate(t.joinDate) : "—"}<br />
+                {t.classTeacherClass ? <><b>শ্রেণি শিক্ষক:</b> {t.classTeacherClass} ({t.classTeacherSection || "ক"})<br /></> : null}
+                <b>ক্লাস নেন:</b> {(t.teachingClasses || []).join(", ") || "—"}<br />
+                <b>যোগ্যতা:</b> {t.qualification}
+              </p>
+            </div>
+          ))}
         </div>
       </section></div>}
 
@@ -1317,6 +1773,12 @@ function Landing({ data, user, goConsole, openLogin, logout, openAdmission, toas
       {page === "contact" && <div className="wrap"><section className="section">
         <div className="sec-head"><h2>যোগাযোগ</h2></div><ContactBlock />
       </section></div>}
+
+      {publicTeacherId && (() => {
+        const pt = data.teachers.find(x => x.id === publicTeacherId);
+        if (!pt) return null;
+        return <TeacherPublicProfileModal teacher={pt} settings={s} close={() => setPublicTeacherId(null)} />;
+      })()}
 
       <footer className="site-foot"><div className="wrap">
         <div className="cols">
@@ -1640,7 +2102,7 @@ function ModalForm({ title, sub, close, onSubmit, children, submitLabel }) {
   );
 }
 
-function Console({ data, setData, user, authToken, logout, goLanding, toast, initialSecKey, clearInitialSecKey, syncStatus, onForceSync, onRefreshFromDb }) {
+function Console({ data, setData, user, authToken, logout, goLanding, toast, initialSecKey, clearInitialSecKey, syncStatus, onForceSync, onRefreshFromDb, onTeachersCleared }) {
   const isMaster = Boolean(user && (user.isMasterAdmin || user.isSuper));
   const isStudent = Boolean(user && user.role === "student");
   const allowedSet = useMemo(() => {
@@ -1673,6 +2135,13 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
   const [editStudent, setEditStudent] = useState(null);
   const [showStudentForm, setShowStudentForm] = useState(false);
   const [teacherForm, setTeacherForm] = useState(false);
+  const [editTeacher, setEditTeacher] = useState(null);
+  const [teacherPresetSubject, setTeacherPresetSubject] = useState("");
+  const [profileTeacherId, setProfileTeacherId] = useState(null);
+  const [idCardTeacherId, setIdCardTeacherId] = useState(null);
+  const [teacherSearch, setTeacherSearch] = useState("");
+  const [teacherSubFilter, setTeacherSubFilter] = useState("সব");
+  const [teacherClassFilter, setTeacherClassFilter] = useState("সব");
   const [classForm, setClassForm] = useState(false);
   const [editClass, setEditClass] = useState(null);
   const [sectionModal, setSectionModal] = useState(null);
@@ -2220,19 +2689,144 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
                 </tbody></table></div>}
         </div>}
 
-        {mod === "teachers" && <div>
-          <h1>শিক্ষক ব্যবস্থাপনা</h1><p className="lede">মোট {data.teachers.length} জন শিক্ষক · ছবি দিলে ল্যান্ডিং পেজের স্লাইডারে দেখা যাবে</p>
-          <div className="toolbar"><span className="sp"></span><button className="btn btn-brand" onClick={() => setTeacherForm(true)}>+ নতুন শিক্ষক</button></div>
-          {data.teachers.length === 0
-            ? <div className="card empty"><b>কোনো শিক্ষক নেই</b>“নতুন শিক্ষক” বোতামে যোগ করুন।</div>
-            : <div className="grid3">{data.teachers.map(t => (
-              <div className="card" key={t.id} style={{ textAlign: "center" }}>
-                {t.photo ? <img src={t.photo} alt={t.name} style={{ width: 84, height: 84, borderRadius: "50%", objectFit: "cover", margin: "0 auto 8px" }} /> : <div className="t-avatar">{t.name.trim().charAt(0)}</div>}
-                <h3 style={{ margin: "4px 0 2px" }}>{t.name}</h3>
-                <p style={{ margin: 0, color: "var(--muted)", fontSize: "14px" }}>{t.subject} · {t.qualification}<br />{t.phone}</p>
-                <button className="mini-btn red" style={{ marginTop: 10 }} onClick={() => patch({ teachers: data.teachers.filter(x => x.id !== t.id) })}>মুছুন</button>
-              </div>))}</div>}
-        </div>}
+        {mod === "teachers" && (() => {
+          const allTeachers = (data.teachers || []).map(t => normalizeTeacherRecord(t, true));
+          const coreSubjects = collectSchoolCoreSubjects(data);
+          const uncoveredSubjects = coreSubjects.filter(sub => !allTeachers.some(t => teacherCoversSubject(t, sub)));
+          const missingDefaultSeeds = DEFAULT_TEACHERS_SEED.filter(s => !allTeachers.some(t => t.id === s.id || (t.subject || "").trim() === s.subject.trim()));
+          const tSubOptions = Array.from(new Set(allTeachers.map(t => t.subject).filter(Boolean)));
+          const tClassOptions = classOptionsOf(data);
+          const q = teacherSearch.trim().toLowerCase();
+          const filteredTeachers = allTeachers.filter(t => {
+            if (teacherSubFilter !== "সব" && t.subject !== teacherSubFilter) return false;
+            if (teacherClassFilter !== "সব" && !(t.teachingClasses || []).includes(teacherClassFilter) && t.classTeacherClass !== teacherClassFilter) return false;
+            if (q) {
+              const hay = [t.name, t.teacherCode, t.designation, t.subject, ...(t.additionalSubjects || []), t.classTeacherClass, t.phone, t.qualification].filter(Boolean).join(" ").toLowerCase();
+              if (!hay.includes(q)) return false;
+            }
+            return true;
+          });
+          const monthlyBill = allTeachers.reduce((s, t) => s + (+t.monthlySalary || 0) + (+t.monthlyAllowance || 0), 0);
+          const classTeacherCount = allTeachers.filter(t => Boolean(t.classTeacherClass)).length;
+          const fillAllSubjectTeachers = () => {
+            const existingIds = new Set(allTeachers.map(t => t.id));
+            const toAdd = DEFAULT_TEACHERS_SEED
+              .filter(s => !existingIds.has(s.id) && !allTeachers.some(t => (t.subject || "").trim() === s.subject.trim()))
+              .map(s => normalizeTeacherRecord(s, true));
+            if (toAdd.length === 0) {
+              toast("সব বিষয়ের জন্য শিক্ষক ইতিমধ্যেই যুক্ত আছেন");
+              return;
+            }
+            patch({ teachers: [...allTeachers, ...toAdd] });
+            toast(`সকল বিষয়ের জন্য ${toBnNum(toAdd.length)} জন নতুন শিক্ষক যোগ হয়েছে`);
+          };
+          const removeTeacher = id => {
+            const next = (data.teachers || []).filter(x => x.id !== id);
+            if (next.length === 0 && onTeachersCleared) onTeachersCleared();
+            patch({ teachers: next });
+            toast("শিক্ষকের তথ্য মুছে ফেলা হয়েছে");
+          };
+          return <div>
+            <h1>বিষয়ভিত্তিক শিক্ষক, প্রোফাইল ও আইডি কার্ড</h1>
+            <p className="lede">প্রতিটি বিষয়ের শিক্ষক তালিকা · প্রোফাইলে ক্লিক করলে যোগদানের তারিখ, কর্মজীবনের মোট বেতন-ভাতার হিস্টোরি, শ্রেণি শিক্ষক ও ক্লাস তথ্য দেখা যাবে</p>
+
+            <div className="kpis">
+              <div className="kpi"><b>{toBnNum(allTeachers.length)}</b><span>মোট শিক্ষক</span></div>
+              <div className="kpi"><b>{toBnNum(classTeacherCount)}</b><span>শ্রেণি শিক্ষক</span></div>
+              <div className="kpi"><b>{toBnNum(coreSubjects.length - uncoveredSubjects.length)}/{toBnNum(coreSubjects.length)}</b><span>কভারকৃত বিষয়</span></div>
+              <div className="kpi"><b>{taka(monthlyBill)}</b><span>মাসিক বেতন ও ভাতা</span></div>
+            </div>
+
+            {missingDefaultSeeds.length > 0 && (
+              <div className="note-box" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 0 }}>
+                <div>
+                  <b>সব বিষয়ের শিক্ষক এক ক্লিকে পূরণ করুন:</b> আরও {toBnNum(missingDefaultSeeds.length)}টি বিষয়ের (বাংলা, ইংরেজি, গণিত, পদার্থ, রসায়ন, জীববিজ্ঞান, ICT, হিসাববিজ্ঞান, ব্যবসায় উদ্যোগ, অর্থনীতি, পৌরনীতি, ভূগোল, ধর্ম, জীবন ও জীবিকা, শিল্প-সংস্কৃতি, ক্রীড়া ও স্পোকেন ল্যাব) শিক্ষক যুক্ত করতে পারবেন।
+                </div>
+                <button type="button" className="btn btn-brand btn-sm" onClick={fillAllSubjectTeachers}>+ সব বিষয়ের শিক্ষক পূরণ করুন</button>
+              </div>
+            )}
+
+            {uncoveredSubjects.length > 0 && (
+              <div className="card" style={{ marginBottom: 14, padding: 12 }}>
+                <div style={{ fontSize: "13.5px", fontWeight: 700, marginBottom: 6, color: "var(--accent)" }}>
+                  এখনো সরাসরি শিক্ষক নির্ধারিত হয়নি ({toBnNum(uncoveredSubjects.length)}টি বিষয়) — ক্লিক করে যোগ করুন:
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {uncoveredSubjects.slice(0, 14).map(sub => (
+                    <button key={sub} type="button" className="mini-btn" onClick={() => { setEditTeacher(null); setTeacherPresetSubject(sub); setTeacherForm(true); }}>
+                      + {sub}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="toolbar">
+              <input type="search" placeholder="নাম, কোড, বিষয় বা শ্রেণি খুঁজুন…" value={teacherSearch} onChange={e => setTeacherSearch(e.target.value)} />
+              <select style={{ maxWidth: 220 }} value={teacherSubFilter} onChange={e => setTeacherSubFilter(e.target.value)}>
+                <option value="সব">সকল বিষয় ({toBnNum(tSubOptions.length)})</option>
+                {tSubOptions.map(sub => <option key={sub} value={sub}>{sub}</option>)}
+              </select>
+              <select style={{ maxWidth: 160 }} value={teacherClassFilter} onChange={e => setTeacherClassFilter(e.target.value)}>
+                <option value="সব">সকল শ্রেণি</option>
+                {tClassOptions.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <span className="sp"></span>
+              {missingDefaultSeeds.length > 0 && (
+                <button type="button" className="btn btn-accent btn-sm" onClick={fillAllSubjectTeachers}>+ সব বিষয়ের শিক্ষক</button>
+              )}
+              <button type="button" className="btn btn-brand" onClick={() => { setEditTeacher(null); setTeacherPresetSubject(""); setTeacherForm(true); }}>+ নতুন শিক্ষক</button>
+            </div>
+
+            {filteredTeachers.length === 0
+              ? <div className="card empty"><b>কোনো শিক্ষক পাওয়া যায়নি</b>অনুসন্ধান পরিবর্তন করুন অথবা “+ নতুন শিক্ষক” বা “+ সব বিষয়ের শিক্ষক পূরণ করুন” ব্যবহার করুন।</div>
+              : <div className="grid3">
+                  {filteredTeachers.map(t => {
+                    const careerTotal = (t.salaryHistory || []).reduce((acc, r) => acc + (+r.basic || 0) + (+r.allowance || 0) + (+r.bonus || 0) - (+r.deduction || 0), 0);
+                    return (
+                      <div
+                        className="card teacher-grid-card"
+                        key={t.id}
+                        style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", gap: 10 }}
+                        onClick={() => setProfileTeacherId(t.id)}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={e => { if (e.key === "Enter" || e.key === " ") setProfileTeacherId(t.id); }}
+                      >
+                        <div>
+                          <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 8 }}>
+                            {t.photo
+                              ? <img src={t.photo} alt={t.name} style={{ width: 68, height: 68, borderRadius: "50%", objectFit: "cover", border: "2px solid var(--brand)", flex: "none" }} />
+                              : <div className="stu-ava" style={{ borderRadius: "50%" }}>{t.name.trim().charAt(0)}</div>}
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ fontSize: "12px", color: "var(--muted)", fontWeight: 600 }}>{t.teacherCode} · {t.designation}</div>
+                              <h3 style={{ margin: "1px 0 2px", fontSize: 17 }}>{t.name}</h3>
+                              <span className="sub-badge">{t.subject}</span>
+                            </div>
+                          </div>
+                          <div style={{ fontSize: "13.5px", color: "var(--ink2)", display: "grid", gap: 3 }}>
+                            <div><b>যোগদান:</b> {bnDate(t.joinDate)} ({serviceDurationBn(t.joinDate)})</div>
+                            <div>
+                              <b>শ্রেণি শিক্ষক:</b>{" "}
+                              {t.classTeacherClass ? <span className="pill pill-ok">{t.classTeacherClass} ({t.classTeacherSection || "ক"})</span> : "নির্ধারিত নয়"}
+                            </div>
+                            <div><b>ক্লাস পান:</b> {(t.teachingClasses || []).join(", ") || "—"}</div>
+                            <div><b>মাসিক বেতন-ভাতা:</b> {taka((+t.monthlySalary || 0) + (+t.monthlyAllowance || 0))} · <b>মোট প্রাপ্ত:</b> <b style={{ color: "var(--brand)" }}>{taka(careerTotal)}</b></div>
+                            <div style={{ fontSize: "12.5px", color: "var(--muted)" }}>{t.qualification} · {t.phone}</div>
+                          </div>
+                        </div>
+                        <div className="row-actions" style={{ borderTop: "1px dashed var(--line)", paddingTop: 9 }} onClick={e => e.stopPropagation()}>
+                          <button type="button" className="mini-btn" style={{ background: "var(--brand-soft)", color: "var(--brand-dark)", borderColor: "var(--brand)" }} onClick={() => setProfileTeacherId(t.id)}>👤 প্রোফাইল</button>
+                          <button type="button" className="mini-btn" style={{ background: "var(--accent-soft)", color: "var(--ink)", borderColor: "var(--accent)" }} onClick={() => setIdCardTeacherId(t.id)}>🪪 আইডি কার্ড</button>
+                          <button type="button" className="mini-btn" onClick={() => { setEditTeacher(t); setTeacherPresetSubject(""); setTeacherForm(true); }}>সম্পাদনা</button>
+                          <button type="button" className="mini-btn red" onClick={() => removeTeacher(t.id)}>মুছুন</button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>}
+          </div>;
+        })()}
 
         {mod === "classes" && <div>
           <h1>শ্রেণি, শাখা, বোর্ড বই ও এক্সট্রা অ্যাকটিভিটিস</h1><p className="lede">শ্রেণি {data.classes.length}টি (প্রতিটি শ্রেণির শাখা যোগ, সম্পাদনা ও মুছে ফেলা যাবে) · বোর্ড বই, বিষয় ও অ্যাকটিভিটিস {data.subjects.length}টি</p>
@@ -3415,8 +4009,59 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
           />
         );
       })()}
-      {teacherForm && <TeacherForm close={() => setTeacherForm(false)} onPhoto={onPhoto} photoErr={photoErr}
-        save={f => { patch({ teachers: [...data.teachers, { ...f, id: uid() }] }); setTeacherForm(false); toast("শিক্ষক যোগ হয়েছে"); }} />}
+      {teacherForm && <TeacherForm
+        initial={editTeacher}
+        presetSubject={teacherPresetSubject}
+        classes={data.classes}
+        allSubjectNames={collectSchoolCoreSubjects(data)}
+        close={() => { setTeacherForm(false); setEditTeacher(null); setTeacherPresetSubject(""); }}
+        onPhoto={onPhoto}
+        photoErr={photoErr}
+        save={rec => {
+          if (editTeacher) {
+            patch({ teachers: data.teachers.map(x => x.id === editTeacher.id ? { ...rec, id: editTeacher.id } : x) });
+            toast("শিক্ষকের তথ্য আপডেট হয়েছে");
+          } else {
+            patch({ teachers: [...data.teachers, { ...rec, id: uid() }] });
+            toast("নতুন শিক্ষক ও প্রোফাইল যোগ হয়েছে");
+          }
+          setTeacherForm(false); setEditTeacher(null); setTeacherPresetSubject("");
+        }}
+      />}
+      {profileTeacherId && (() => {
+        const rawT = data.teachers.find(t => t.id === profileTeacherId);
+        if (!rawT) return null;
+        const tch = normalizeTeacherRecord(rawT, true);
+        return (
+          <TeacherProfileModal
+            teacher={tch}
+            settings={S}
+            onUpdateTeacher={upd => patch({ teachers: data.teachers.map(x => x.id === tch.id ? { ...normalizeTeacherRecord(x, true), ...upd } : x) })}
+            onEdit={() => { setProfileTeacherId(null); setEditTeacher(tch); setTeacherPresetSubject(""); setTeacherForm(true); }}
+            onOpenIdCard={() => { setProfileTeacherId(null); setIdCardTeacherId(tch.id); }}
+            close={() => setProfileTeacherId(null)}
+            toast={toast}
+          />
+        );
+      })()}
+      {idCardTeacherId && (() => {
+        const rawT = data.teachers.find(t => t.id === idCardTeacherId);
+        if (!rawT) return null;
+        const tch = normalizeTeacherRecord(rawT, true);
+        return (
+          <TeacherIdCardModal
+            teacher={tch}
+            settings={S}
+            onUpdateTeacher={upd => patch({ teachers: data.teachers.map(x => x.id === tch.id ? { ...normalizeTeacherRecord(x, true), ...upd } : x) })}
+            onUpdateSettings={upd => patch({ settings: { ...S, ...upd } })}
+            onPhoto={onPhoto}
+            photoErr={photoErr}
+            onOpenProfile={() => { setIdCardTeacherId(null); setProfileTeacherId(tch.id); }}
+            close={() => setIdCardTeacherId(null)}
+            toast={toast}
+          />
+        );
+      })()}
       {classForm && <ClassForm initial={editClass} close={() => { setClassForm(false); setEditClass(null); }}
         save={rec => {
           if (editClass) {
@@ -3921,21 +4566,630 @@ function SubjectForm({ initial, classes, classList, defaultClass, defaultSection
     </ModalForm>
   );
 }
-function TeacherForm({ close, save, onPhoto, photoErr }) {
-  const [f, setF] = useState({ name: "", subject: "", phone: "", qualification: "", photo: "" });
-  const set = k => e => setF({ ...f, [k]: e.target.value });
+function TeacherForm({ initial, presetSubject, classes, allSubjectNames, close, save, onPhoto, photoErr }) {
+  const classOpts = useMemo(() => {
+    const names = (classes || []).map(c => c.name).filter(Boolean);
+    return names.length ? names : CLASS_NAMES;
+  }, [classes]);
+  const [f, setF] = useState(() => {
+    if (initial) {
+      const n = normalizeTeacherRecord(initial, true);
+      return {
+        ...n,
+        additionalSubjectsText: (n.additionalSubjects || []).join(", "),
+        teachingClasses: Array.isArray(n.teachingClasses) ? n.teachingClasses : [],
+        regenSalary: false
+      };
+    }
+    return {
+      teacherCode: "TCH-" + String(100 + Math.floor(Math.random() * 899)),
+      name: "",
+      designation: "সহকারী শিক্ষক",
+      subject: presetSubject || "",
+      additionalSubjectsText: "",
+      qualification: "",
+      phone: "",
+      email: "",
+      bloodGroup: "O+",
+      address: "",
+      photo: "",
+      joinDate: todayStr(),
+      monthlySalary: 26000,
+      monthlyAllowance: 4500,
+      classTeacherClass: "",
+      classTeacherSection: "ক",
+      teachingClasses: ["ষষ্ঠ", "সপ্তম", "অষ্টম"],
+      status: "সক্রিয়",
+      regenSalary: true
+    };
+  });
+  const set = k => e => setF(prev => ({ ...prev, [k]: e.target.value }));
+  const toggleTeachClass = clsName => {
+    setF(prev => {
+      const cur = prev.teachingClasses || [];
+      return {
+        ...prev,
+        teachingClasses: cur.includes(clsName) ? cur.filter(x => x !== clsName) : [...cur, clsName]
+      };
+    });
+  };
+  const classTeacherSecOpts = useMemo(() => {
+    if (!f.classTeacherClass) return ["ক", "খ", "গ"];
+    const matched = (classes || []).find(c => c.name === f.classTeacherClass);
+    return matched ? normalizeClassSections(matched).map(s => s.name) : defaultSectionNamesForClass(f.classTeacherClass);
+  }, [f.classTeacherClass, classes]);
+
+  const submit = () => {
+    if (!f.name.trim()) return;
+    const addSubs = String(f.additionalSubjectsText || "")
+      .split(",")
+      .map(s => s.trim())
+      .filter(Boolean);
+    const joinDate = /^\d{4}-\d{2}-\d{2}$/.test(f.joinDate) ? f.joinDate : todayStr();
+    const mSal = Math.max(0, Number(f.monthlySalary) || 0);
+    const mAllow = Math.max(0, Number(f.monthlyAllowance) || 0);
+    const teachCls = f.teachingClasses && f.teachingClasses.length ? f.teachingClasses : (f.classTeacherClass ? [f.classTeacherClass] : ["ষষ্ঠ"]);
+    const prevHistory = initial && Array.isArray(initial.salaryHistory) ? initial.salaryHistory : [];
+    const salaryHistory = f.regenSalary || prevHistory.length === 0
+      ? buildCareerSalaryHistory(joinDate, mSal, mAllow, (initial && initial.id) || "new")
+      : prevHistory;
+    save({
+      teacherCode: f.teacherCode.trim() || "TCH-100",
+      name: f.name.trim(),
+      designation: f.designation.trim() || "সহকারী শিক্ষক",
+      subject: f.subject.trim() || "সাধারণ",
+      additionalSubjects: addSubs,
+      qualification: f.qualification.trim(),
+      phone: f.phone.trim(),
+      email: f.email.trim(),
+      bloodGroup: f.bloodGroup,
+      address: f.address.trim(),
+      photo: f.photo || "",
+      joinDate,
+      monthlySalary: mSal,
+      monthlyAllowance: mAllow,
+      classTeacherClass: f.classTeacherClass,
+      classTeacherSection: f.classTeacherClass ? (f.classTeacherSection || classTeacherSecOpts[0] || "ক") : "",
+      teachingClasses: teachCls,
+      teachingAssignments: teachCls.map(cls => ({
+        cls,
+        section: f.classTeacherClass === cls ? (f.classTeacherSection || "ক") : "সব শাখা",
+        subject: f.subject.trim() || "সাধারণ"
+      })),
+      salaryHistory,
+      status: f.status || "সক্রিয়"
+    });
+  };
+
   return (
-    <ModalForm title="নতুন শিক্ষক" close={close} onSubmit={() => { if (f.name.trim()) save(f); }}>
-      <Field label="নাম *" full><input value={f.name} onChange={set("name")} required /></Field>
-      <Field label="বিষয়"><input value={f.subject} onChange={set("subject")} /></Field>
-      <Field label="মোবাইল"><input value={f.phone} onChange={set("phone")} /></Field>
-      <Field label="শিক্ষাগত যোগ্যতা" full><input value={f.qualification} onChange={set("qualification")} /></Field>
-      <Field label="ছবি (ঐচ্ছিক — ল্যান্ডিং পেজের স্লাইডারে দেখা যাবে)" full>
+    <ModalForm title={initial ? "শিক্ষকের তথ্য সম্পাদনা" : "নতুন শিক্ষক যোগ করুন"} sub="বিষয়, যোগদানের তারিখ, বেতন-ভাতা, শ্রেণি শিক্ষক ও পাঠদানের শ্রেণি নির্ধারণ করুন" close={close} onSubmit={submit}>
+      <Field label="শিক্ষকের নাম *"><input value={f.name} onChange={set("name")} required /></Field>
+      <Field label="শিক্ষক আইডি / কোড"><input value={f.teacherCode} onChange={set("teacherCode")} placeholder="যেমন: TCH-123" /></Field>
+      <Field label="পদবি">
+        <input list="t-desig-opts" value={f.designation} onChange={set("designation")} />
+        <datalist id="t-desig-opts">
+          <option value="প্রধান শিক্ষক" /><option value="সহকারী প্রধান শিক্ষক" /><option value="জ্যেষ্ঠ প্রভাষক" />
+          <option value="সহকারী অধ্যাপক" /><option value="প্রভাষক" /><option value="সিনিয়র শিক্ষক" />
+          <option value="সহকারী শিক্ষক" /><option value="ধর্মীয় শিক্ষক" /><option value="ক্রীড়া শিক্ষক" /><option value="প্রশিক্ষক" />
+        </datalist>
+      </Field>
+      <Field label="প্রধান বিষয় *">
+        <input list="t-sub-opts" value={f.subject} onChange={set("subject")} placeholder="বিষয় বাছুন বা লিখুন" required />
+        <datalist id="t-sub-opts">
+          {(allSubjectNames || []).map(sb => <option key={sb} value={sb} />)}
+        </datalist>
+      </Field>
+      <Field label="অতিরিক্ত পড়ানো বিষয়সমূহ (কমা দিয়ে আলাদা করুন)" full>
+        <input value={f.additionalSubjectsText} onChange={set("additionalSubjectsText")} placeholder="যেমন: উচ্চতর গণিত, প্রাথমিক গণিত" />
+      </Field>
+      <Field label="শিক্ষাগত যোগ্যতা"><input value={f.qualification} onChange={set("qualification")} placeholder="যেমন: এম.এসসি, বি.এড" /></Field>
+      <Field label="মোবাইল নম্বর"><input value={f.phone} onChange={set("phone")} placeholder="017XX-XXXXXX" /></Field>
+      <Field label="ইমেইল"><input type="email" value={f.email} onChange={set("email")} placeholder="teacher@school.edu.bd" /></Field>
+      <Field label="রক্তের গ্রুপ">
+        <select value={f.bloodGroup} onChange={set("bloodGroup")}>
+          <option value="">— বাছুন —</option>
+          {["A+", "A-", "B+", "B-", "O+", "O-", "AB+", "AB-"].map(b => <option key={b} value={b}>{b}</option>)}
+        </select>
+      </Field>
+      <Field label="যোগদানের তারিখ *"><input type="date" value={f.joinDate} onChange={set("joinDate")} required /></Field>
+      <Field label="অবস্থা">
+        <select value={f.status} onChange={set("status")}>
+          <option value="সক্রিয়">সক্রিয়</option><option value="ছুটিতে">ছুটিতে</option><option value="অবসরপ্রাপ্ত">অবসরপ্রাপ্ত</option>
+        </select>
+      </Field>
+      <Field label="বর্তমান মাসিক মূল বেতন (৳)"><input type="number" min="0" value={f.monthlySalary} onChange={set("monthlySalary")} /></Field>
+      <Field label="মাসিক ভাতা (বাড়িভাড়া/চিকিৎসা/টিফিন) (৳)"><input type="number" min="0" value={f.monthlyAllowance} onChange={set("monthlyAllowance")} /></Field>
+      <Field label="শ্রেণি শিক্ষক (কোন শ্রেণির দায়িত্বে)">
+        <select value={f.classTeacherClass} onChange={e => setF(prev => ({ ...prev, classTeacherClass: e.target.value, classTeacherSection: e.target.value ? (prev.classTeacherSection || "ক") : "" }))}>
+          <option value="">— শ্রেণি শিক্ষক নন —</option>
+          {classOpts.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+      </Field>
+      <Field label="শ্রেণি শিক্ষকের শাখা">
+        <select value={f.classTeacherSection} onChange={set("classTeacherSection")} disabled={!f.classTeacherClass}>
+          {classTeacherSecOpts.map(sec => <option key={sec} value={sec}>{sec}</option>)}
+        </select>
+      </Field>
+      <Field label="যেসব শ্রেণিতে ক্লাস নেন (একাধিক বাছুন)" full>
+        <div className="class-chip-grid">
+          {classOpts.map(clsName => {
+            const on = (f.teachingClasses || []).includes(clsName);
+            return (
+              <button key={clsName} type="button" className={"class-chip-btn" + (on ? " on" : "")} onClick={() => toggleTeachClass(clsName)}>
+                {on ? "✓ " : ""}{clsName}
+              </button>
+            );
+          })}
+        </div>
+      </Field>
+      <Field label="ঠিকানা" full><input value={f.address} onChange={set("address")} /></Field>
+      <Field label="ছবি (আইডি কার্ড, প্রোফাইল ও স্লাইডারে দেখাবে)" full>
         <input type="file" accept="image/*" onChange={e => onPhoto(e, url => setF(prev => ({ ...prev, photo: url })))} />
         {photoErr && <span style={{ color: "var(--danger)", fontSize: "13px" }}>{photoErr}</span>}
         {f.photo && <img src={f.photo} alt="শিক্ষকের ছবি" style={{ width: 72, height: 72, borderRadius: "50%", objectFit: "cover", marginTop: 8 }} />}
       </Field>
+      {initial && (
+        <div className="full" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <input id="regen-sal" type="checkbox" style={{ width: 18, minHeight: 18 }} checked={Boolean(f.regenSalary)} onChange={e => setF(prev => ({ ...prev, regenSalary: e.target.checked }))} />
+          <label htmlFor="regen-sal" style={{ margin: 0, cursor: "pointer" }}>যোগদানের তারিখ ও নতুন বেতন অনুযায়ী সম্পূর্ণ কর্মজীবনের বেতন হিস্টোরি পুনরায় তৈরি করুন</label>
+        </div>
+      )}
     </ModalForm>
+  );
+}
+
+function TeacherPublicProfileModal({ teacher, settings, close }) {
+  return (
+    <div className="modal-bg" onClick={e => { if (e.target === e.currentTarget) close(); }}>
+      <div className="modal wide">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 12 }}>
+          <div>
+            <h2>শিক্ষকের পরিচিতি ও একাডেমিক তথ্য</h2>
+            <p className="sub" style={{ margin: 0 }}>{settings.name}</p>
+          </div>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={close}>বন্ধ করুন</button>
+        </div>
+        <div className="hist-head">
+          {teacher.photo ? <img src={teacher.photo} alt={teacher.name} className="stu-ava" /> : <div className="stu-ava">{(teacher.name || "শ").trim().charAt(0)}</div>}
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: "12.5px", color: "var(--muted)", fontWeight: 700 }}>{teacher.teacherCode} · {teacher.designation || "সহকারী শিক্ষক"}</div>
+            <h3 style={{ margin: "2px 0 4px", fontSize: 20 }}>{teacher.name}</h3>
+            <span className="sub-badge">{teacher.subject}</span>
+            {teacher.qualification && <div style={{ fontSize: "13.5px", color: "var(--ink2)", marginTop: 4 }}>যোগ্যতা: <b>{teacher.qualification}</b></div>}
+          </div>
+        </div>
+        <div className="grid2">
+          <div className="card">
+            <h4 style={{ margin: "0 0 8px" }}>পেশাগত তথ্য</h4>
+            <div style={{ fontSize: "14px", display: "grid", gap: 6 }}>
+              <div><b>যোগদানের তারিখ:</b> {teacher.joinDate ? bnDate(teacher.joinDate) : "—"} ({serviceDurationBn(teacher.joinDate)})</div>
+              <div><b>প্রধান বিষয়:</b> {teacher.subject}</div>
+              {(teacher.additionalSubjects || []).length > 0 && <div><b>অন্যান্য পাঠদান বিষয়:</b> {teacher.additionalSubjects.join(", ")}</div>}
+              <div><b>শ্রেণি শিক্ষক:</b> {teacher.classTeacherClass ? `${teacher.classTeacherClass} শ্রেণি (${teacher.classTeacherSection || "ক"} শাখা)` : "নির্ধারিত নয়"}</div>
+            </div>
+          </div>
+          <div className="card">
+            <h4 style={{ margin: "0 0 8px" }}>যেসব শ্রেণিতে ক্লাস নেন</h4>
+            <div className="class-chip-grid" style={{ marginBottom: 8 }}>
+              {(teacher.teachingClasses || []).map(c => <span key={c} className="class-chip-btn on">{c}</span>)}
+            </div>
+            {(teacher.teachingAssignments || []).length > 0 && (
+              <div style={{ fontSize: "13px", color: "var(--ink2)", display: "grid", gap: 4 }}>
+                {teacher.teachingAssignments.map((a, idx) => (
+                  <div key={idx}>• <b>{a.cls}</b> ({a.section}) — {a.subject}</div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TeacherProfileModal({ teacher, settings, onUpdateTeacher, onEdit, onOpenIdCard, close, toast }) {
+  const [payDate, setPayDate] = useState(todayStr());
+  const [payMonth, setPayMonth] = useState(() => BN_MONTHS[new Date().getMonth()] + " " + toBnNum(new Date().getFullYear()));
+  const [payBasic, setPayBasic] = useState(String(teacher.monthlySalary || 26000));
+  const [payAllow, setPayAllow] = useState(String(teacher.monthlyAllowance || 4500));
+  const [payBonus, setPayBonus] = useState("0");
+  const [payDeduct, setPayDeduct] = useState("0");
+  const [payNote, setPayNote] = useState("মাসিক বেতন ও ভাতা");
+  const [showAddPay, setShowAddPay] = useState(false);
+
+  const history = useMemo(() => {
+    const list = Array.isArray(teacher.salaryHistory) ? teacher.salaryHistory : [];
+    return list.slice().sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  }, [teacher.salaryHistory]);
+
+  const totals = useMemo(() => {
+    return history.reduce((acc, r) => {
+      const b = +r.basic || 0;
+      const al = +r.allowance || 0;
+      const bn = +r.bonus || 0;
+      const dd = +r.deduction || 0;
+      acc.basic += b;
+      acc.allowance += al;
+      acc.bonus += bn;
+      acc.deduction += dd;
+      acc.net += b + al + bn - dd;
+      return acc;
+    }, { basic: 0, allowance: 0, bonus: 0, deduction: 0, net: 0 });
+  }, [history]);
+
+  const addSalaryEntry = e => {
+    e.preventDefault();
+    const rec = {
+      id: "sal-" + uid(),
+      date: payDate || todayStr(),
+      month: payMonth.trim() || bnDate(payDate || todayStr()),
+      basic: Math.max(0, Number(payBasic) || 0),
+      allowance: Math.max(0, Number(payAllow) || 0),
+      bonus: Math.max(0, Number(payBonus) || 0),
+      deduction: Math.max(0, Number(payDeduct) || 0),
+      note: payNote.trim() || "বেতন ও ভাতা"
+    };
+    onUpdateTeacher({ salaryHistory: [rec, ...history] });
+    setShowAddPay(false);
+    toast("বেতন-ভাতার নতুন এন্ট্রি যুক্ত হয়েছে");
+  };
+
+  const deleteSalaryEntry = entryId => {
+    onUpdateTeacher({ salaryHistory: history.filter(r => r.id !== entryId) });
+    toast("বেতন এন্ট্রি মুছে ফেলা হয়েছে");
+  };
+
+  const printProfile = () => {
+    document.body.classList.add("printing-teacher-profile");
+    setTimeout(() => {
+      window.print();
+      setTimeout(() => document.body.classList.remove("printing-teacher-profile"), 300);
+    }, 60);
+  };
+
+  const downloadProfileHtml = () => {
+    const rows = history.map(r => {
+      const net = (+r.basic || 0) + (+r.allowance || 0) + (+r.bonus || 0) - (+r.deduction || 0);
+      return `<tr><td>${bnDate(r.date)}</td><td>${r.month}</td><td>${taka(r.basic)}</td><td>${taka(r.allowance)}</td><td>${taka(r.bonus)}</td><td>${taka(r.deduction)}</td><td><b>${taka(net)}</b></td><td>${r.note || "—"}</td></tr>`;
+    }).join("");
+    const html = `<!doctype html><html lang='bn'><head><meta charset='utf-8'><title>শিক্ষক প্রোফাইল ও বেতন হিস্টোরি - ${teacher.name}</title><style>body{font-family:sans-serif;padding:28px;color:#1c2a1e}h1,h2,h3{margin:0 0 6px}table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13.5px}td,th{border:1px solid #bbb;padding:7px;text-align:left}.box{background:#f4f6f1;padding:12px;border-radius:8px;margin-bottom:14px}</style></head><body><h1>${settings.name}</h1><p>${settings.address || ""}</p><div class='box'><b>নাম:</b> ${teacher.name} (${teacher.teacherCode}) · <b>পদবি:</b> ${teacher.designation}<br><b>বিষয়:</b> ${teacher.subject} · <b>যোগ্যতা:</b> ${teacher.qualification || "—"}<br><b>যোগদানের তারিখ:</b> ${bnDate(teacher.joinDate)} (${serviceDurationBn(teacher.joinDate)})<br><b>শ্রেণি শিক্ষক:</b> ${teacher.classTeacherClass ? `${teacher.classTeacherClass} (${teacher.classTeacherSection || "ক"})` : "নির্ধারিত নয়"} · <b>ক্লাস পান:</b> ${(teacher.teachingClasses || []).join(", ")}</div><h3>কর্মজীবনের মোট বেতন ও ভাতার সারসংক্ষেপ</h3><p>মূল বেতন: ${taka(totals.basic)} · মোট ভাতা: ${taka(totals.allowance)} · উৎসব বোনাস: ${taka(totals.bonus)} · সর্বমোট প্রাপ্ত: <b>${taka(totals.net)}</b></p><h3>তারিখ অনুযায়ী বেতন-ভাতার পূর্ণ হিস্টোরি (${toBnNum(history.length)}টি রেকর্ড)</h3><table><tr><th>তারিখ</th><th>মাস</th><th>মূল বেতন</th><th>ভাতা</th><th>বোনাস</th><th>কর্তন</th><th>মোট প্রাপ্ত</th><th>বিবরণ</th></tr>${rows}</table></body></html>`;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
+    a.download = `teacher-profile-${teacher.teacherCode || teacher.id}.html`;
+    document.body.appendChild(a); a.click(); a.remove();
+    toast("শিক্ষকের প্রোফাইল ও বেতন হিস্টোরি ডাউনলোড হচ্ছে");
+  };
+
+  return (
+    <div className="modal-bg" onClick={e => { if (e.target === e.currentTarget) close(); }}>
+      <div className="modal xl teacher-profile-print-area">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+          <div>
+            <h2>শিক্ষকের পূর্ণ প্রোফাইল ও কর্মজীবনের বেতন হিস্টোরি</h2>
+            <p className="sub" style={{ margin: 0 }}>{settings.name} · যোগদান, বিষয়, শ্রেণি শিক্ষক, পাঠদানের শ্রেণি ও মোট বেতন-ভাতার তারিখভিত্তিক হিসাব</p>
+          </div>
+          <div className="no-print" style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+            <button type="button" className="btn btn-accent btn-sm" onClick={onOpenIdCard}>🪪 আইডি কার্ড</button>
+            <button type="button" className="btn btn-brand btn-sm" onClick={onEdit}>✏ সম্পাদনা</button>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={printProfile}>🖨 প্রিন্ট</button>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={downloadProfileHtml}>⬇ ডাউনলোড</button>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={close}>বন্ধ করুন</button>
+          </div>
+        </div>
+
+        <div className="hist-head">
+          {teacher.photo
+            ? <img src={teacher.photo} alt={teacher.name} className="stu-ava" />
+            : <div className="stu-ava">{(teacher.name || "শ").trim().charAt(0)}</div>}
+          <div style={{ flex: 1, minWidth: 220 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span className="pill pill-ok">{teacher.status || "সক্রিয়"}</span>
+              <code className="inline">{teacher.teacherCode}</code>
+              <span style={{ fontSize: "13px", color: "var(--muted)" }}>{teacher.designation}</span>
+            </div>
+            <h3 style={{ margin: "4px 0 3px", fontSize: 20 }}>{teacher.name}</h3>
+            <div style={{ fontSize: "14px", color: "var(--ink2)" }}>
+              <b>যোগদানের তারিখ:</b> {bnDate(teacher.joinDate)} (<b style={{ color: "var(--brand)" }}>{serviceDurationBn(teacher.joinDate)}</b>)
+              {" · "}<b>প্রধান বিষয়:</b> {teacher.subject}
+            </div>
+            <div style={{ fontSize: "13.5px", color: "var(--muted)", marginTop: 3 }}>
+              যোগ্যতা: <b>{teacher.qualification || "—"}</b> · মোবাইল: <b>{teacher.phone || "—"}</b>
+              {teacher.email ? ` · ${teacher.email}` : ""}
+              {teacher.bloodGroup ? ` · রক্ত: ${teacher.bloodGroup}` : ""}
+              {teacher.address ? ` · ঠিকানা: ${teacher.address}` : ""}
+            </div>
+          </div>
+        </div>
+
+        <div className="grid2" style={{ marginBottom: 14 }}>
+          <div className="card">
+            <h3 style={{ margin: "0 0 8px", fontSize: 16 }}>বিষয় ও শ্রেণি শিক্ষকের দায়িত্ব</h3>
+            <div style={{ fontSize: "14px", display: "grid", gap: 7 }}>
+              <div><b>যে বিষয়ের শিক্ষক:</b> <span className="sub-badge">{teacher.subject}</span></div>
+              {(teacher.additionalSubjects || []).length > 0 && (
+                <div><b>অতিরিক্ত পাঠদান বিষয়:</b> {teacher.additionalSubjects.join(", ")}</div>
+              )}
+              <div>
+                <b>কোন শ্রেণির শ্রেণি শিক্ষক:</b>{" "}
+                {teacher.classTeacherClass
+                  ? <span className="pill pill-ok">{teacher.classTeacherClass} শ্রেণি — {teacher.classTeacherSection || "ক"} শাখা</span>
+                  : <span className="pill pill-info">শ্রেণি শিক্ষক হিসেবে নির্ধারিত নয়</span>}
+              </div>
+              <div>
+                <b>বর্তমান মাসিক বেতন-ভাতা:</b> মূল {taka(teacher.monthlySalary)} + ভাতা {taka(teacher.monthlyAllowance)} = <b style={{ color: "var(--brand)" }}>{taka((+teacher.monthlySalary || 0) + (+teacher.monthlyAllowance || 0))}</b>
+              </div>
+            </div>
+          </div>
+
+          <div className="card">
+            <h3 style={{ margin: "0 0 8px", fontSize: 16 }}>যেসব শ্রেণীতে ক্লাস পান ({toBnNum((teacher.teachingClasses || []).length)}টি শ্রেণি)</h3>
+            <div className="class-chip-grid" style={{ marginBottom: 10 }}>
+              {(teacher.teachingClasses || []).map(cls => (
+                <span key={cls} className="class-chip-btn on">{cls}</span>
+              ))}
+            </div>
+            {(teacher.teachingAssignments || []).length > 0 && (
+              <div style={{ fontSize: "13px", color: "var(--ink2)", borderTop: "1px dashed var(--line)", paddingTop: 7, display: "grid", gap: 4 }}>
+                {teacher.teachingAssignments.map((a, idx) => (
+                  <div key={idx}>• <b>{a.cls}</b> ({a.section || "সব শাখা"}) — {a.subject || teacher.subject}</div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="hist-stats">
+          <div className="hist-stat">
+            <span>কর্মজীবনে মোট মূল বেতন ({toBnNum(history.length)} মাস)</span>
+            <b>{taka(totals.basic)}</b>
+          </div>
+          <div className="hist-stat">
+            <span>মোট ভাতা প্রাপ্তি</span>
+            <b style={{ color: "var(--brand)" }}>{taka(totals.allowance)}</b>
+          </div>
+          <div className="hist-stat">
+            <span>মোট উৎসব বোনাস</span>
+            <b style={{ color: "var(--accent)" }}>{taka(totals.bonus)}</b>
+          </div>
+          <div className="hist-stat">
+            <span>যোগদান থেকে সর্বমোট বেতন-ভাতা</span>
+            <b style={{ color: "var(--brand-dark)" }}>{taka(totals.net)}</b>
+          </div>
+        </div>
+
+        <div className="card">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+            <div>
+              <h3 style={{ margin: 0, fontSize: 16.5 }}>যোগদান থেকে কর্মজীবনের বেতন ও ভাতার হিস্টোরি (তারিখসহ)</h3>
+              <p style={{ margin: "2px 0 0", fontSize: "13px", color: "var(--muted)" }}>
+                যোগদানের তারিখ {bnDate(teacher.joinDate)} থেকে বর্তমান পর্যন্ত মোট {toBnNum(history.length)}টি প্রদানের রেকর্ড
+                {totals.deduction > 0 ? ` · মোট কর্তন: ${taka(totals.deduction)}` : ""}
+              </p>
+            </div>
+            <button type="button" className="btn btn-brand btn-sm no-print" onClick={() => setShowAddPay(p => !p)}>
+              {showAddPay ? "ফর্ম বন্ধ করুন" : "+ বেতন / ভাতা / বোনাস এন্ট্রি"}
+            </button>
+          </div>
+
+          {showAddPay && (
+            <form onSubmit={addSalaryEntry} className="no-print" style={{ background: "var(--surface2)", border: "1px solid var(--brand)", borderRadius: 10, padding: 12, marginBottom: 12 }}>
+              <div className="form-grid">
+                <Field label="প্রদানের তারিখ"><input type="date" value={payDate} onChange={e => setPayDate(e.target.value)} required /></Field>
+                <Field label="মাস ও বছর"><input value={payMonth} onChange={e => setPayMonth(e.target.value)} required /></Field>
+                <Field label="মূল বেতন (৳)"><input type="number" min="0" value={payBasic} onChange={e => setPayBasic(e.target.value)} required /></Field>
+                <Field label="ভাতা (৳)"><input type="number" min="0" value={payAllow} onChange={e => setPayAllow(e.target.value)} /></Field>
+                <Field label="উৎসব বোনাস (৳)"><input type="number" min="0" value={payBonus} onChange={e => setPayBonus(e.target.value)} /></Field>
+                <Field label="কর্তন (৳)"><input type="number" min="0" value={payDeduct} onChange={e => setPayDeduct(e.target.value)} /></Field>
+                <Field label="মন্তব্য / বিবরণ" full><input value={payNote} onChange={e => setPayNote(e.target.value)} /></Field>
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                <button type="submit" className="btn btn-brand btn-sm">সংরক্ষণ করুন</button>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => setShowAddPay(false)}>বাতিল</button>
+              </div>
+            </form>
+          )}
+
+          <div className="table-wrap" style={{ maxHeight: 340, overflowY: "auto" }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>প্রদানের তারিখ</th>
+                  <th>মাস</th>
+                  <th>মূল বেতন</th>
+                  <th>ভাতা</th>
+                  <th>বোনাস</th>
+                  <th>কর্তন</th>
+                  <th>মোট প্রাপ্ত</th>
+                  <th>বিবরণ</th>
+                  <th className="no-print">অ্যাকশন</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.length === 0 && (
+                  <tr><td colSpan="9" style={{ textAlign: "center", color: "var(--muted)" }}>কোনো বেতন রেকর্ড নেই।</td></tr>
+                )}
+                {history.map(r => {
+                  const net = (+r.basic || 0) + (+r.allowance || 0) + (+r.bonus || 0) - (+r.deduction || 0);
+                  return (
+                    <tr key={r.id}>
+                      <td><b>{bnDate(r.date)}</b></td>
+                      <td>{r.month}</td>
+                      <td>{taka(r.basic)}</td>
+                      <td style={{ color: "var(--brand)" }}>{taka(r.allowance)}</td>
+                      <td style={{ color: (+r.bonus || 0) > 0 ? "var(--accent)" : "var(--muted)" }}>{(+r.bonus || 0) > 0 ? taka(r.bonus) : "—"}</td>
+                      <td style={{ color: (+r.deduction || 0) > 0 ? "var(--danger)" : "var(--muted)" }}>{(+r.deduction || 0) > 0 ? taka(r.deduction) : "—"}</td>
+                      <td><b style={{ color: "var(--brand-dark)" }}>{taka(net)}</b></td>
+                      <td style={{ fontSize: 12.5, color: "var(--ink2)" }}>{r.note || "—"}</td>
+                      <td className="no-print"><button type="button" className="mini-btn red" onClick={() => deleteSalaryEntry(r.id)}>মুছুন</button></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TeacherIdCardModal({ teacher, settings, onUpdateTeacher, onUpdateSettings, onPhoto, photoErr, onOpenProfile, close, toast }) {
+  const [qrUrl, setQrUrl] = useState("");
+  const qrPayload = "TCHID:" + teacher.id;
+
+  useEffect(() => {
+    let active = true;
+    QRCode.toDataURL(qrPayload, { width: 240, margin: 1, errorCorrectionLevel: "M", color: { dark: "#123f24", light: "#ffffff" } })
+      .then(url => { if (active) setQrUrl(url); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [qrPayload]);
+
+  const printIdCard = () => {
+    document.body.classList.add("printing-id");
+    setTimeout(() => {
+      window.print();
+      setTimeout(() => document.body.classList.remove("printing-id"), 300);
+    }, 60);
+  };
+
+  const downloadQrPng = () => {
+    if (!qrUrl) return;
+    const a = document.createElement("a");
+    a.href = qrUrl;
+    a.download = `teacher-qr-${teacher.teacherCode || teacher.id}.png`;
+    document.body.appendChild(a); a.click(); a.remove();
+    toast("শিক্ষকের QR কোড ডাউনলোড হচ্ছে");
+  };
+
+  const downloadIdHtml = () => {
+    const logoHtml = settings.idLogo ? `<img src="${settings.idLogo}" alt="লোগো" style="width:100%;height:100%;object-fit:contain">` : "👩‍🏫";
+    const photoHtml = teacher.photo ? `<img src="${teacher.photo}" alt="${teacher.name}" style="width:100%;height:100%;object-fit:cover">` : (teacher.name || "শ").trim().charAt(0);
+    const sigHtml = settings.principalSignature ? `<img src="${settings.principalSignature}" alt="স্বাক্ষর" style="height:34px;max-width:135px;object-fit:contain;display:block;margin:0 auto 2px">` : "";
+    const clsDuty = teacher.classTeacherClass ? `${teacher.classTeacherClass} (${teacher.classTeacherSection || "ক"})` : "নির্ধারিত নয়";
+    const html = `<!doctype html><html lang='bn'><head><meta charset='utf-8'><title>শিক্ষক আইডি কার্ড - ${teacher.name}</title><style>body{font-family:sans-serif;background:#eef2eb;padding:24px;display:flex;gap:24px;justify-content:center;flex-wrap:wrap}.card{width:310px;min-height:465px;background:#fff;border:1.5px solid #c9d6c5;border-radius:16px;overflow:hidden;display:flex;flex-direction:column}.head{background:linear-gradient(135deg,#123f24,#1d6b3c);color:#fff;padding:14px;display:flex;align-items:center;gap:10px}.logo{width:46px;height:46px;border-radius:10px;background:#fff;color:#123f24;display:flex;align-items:center;justify-content:center;overflow:hidden;font-size:22px}.tag{background:#1d6b3c;color:#fff;text-align:center;font-size:11.5px;font-weight:700;padding:4px}.body{padding:14px 16px;flex:1;display:flex;flex-direction:column;align-items:center}.ava{width:104px;height:116px;border-radius:12px;border:2.5px solid #1d6b3c;overflow:hidden;background:#edf1e6;display:flex;align-items:center;justify-content:center;margin-bottom:10px;font-size:38px;font-weight:700;color:#123f24}.meta{width:100%;font-size:12.5px;border-top:1px dashed #d8dfd0;padding-top:8px}.row{display:flex;justify-content:space-between;gap:8px;margin-bottom:4px}.foot{padding:8px 16px 12px;border-top:1px solid #edf1e6;background:#f9fbf8;display:flex;justify-content:space-between;align-items:flex-end}.sig{text-align:center;min-width:130px;font-size:11.5px;font-weight:700;color:#123f24}.sigline{border-top:1.5px solid #18261a;padding-top:2px}.back{padding:16px;flex:1;display:flex;flex-direction:column;align-items:center;justify-content:space-between;text-align:center}.qr{border:2px solid #1d6b3c;border-radius:12px;padding:10px}.info{width:100%;background:#f2f6ef;border:1px solid #d8dfd0;border-radius:10px;padding:10px;text-align:left;font-size:12px}</style></head><body><div class='card'><div class='head'><div class='logo'>${logoHtml}</div><div><h3 style='margin:0;font-size:15.5px'>${settings.name}</h3><p style='margin:2px 0 0;font-size:11.5px'>${settings.motto || ""}</p></div></div><div class='tag'>শিক্ষক পরিচয়পত্র · TEACHER ID CARD</div><div class='body'><div class='ava'>${photoHtml}</div><h2 style='margin:0 0 2px;font-size:18px;color:#123f24'>${teacher.name}</h2><div style='font-size:12px;color:#d97706;font-weight:700;margin-bottom:6px'>${teacher.designation}</div><div class='meta'><div class='row'><span>বিষয়:</span><b>${teacher.subject}</b></div><div class='row'><span>শ্রেণি শিক্ষক:</span><b>${clsDuty}</b></div><div class='row'><span>যোগদান:</span><b>${bnDate(teacher.joinDate)}</b></div><div class='row'><span>মোবাইল:</span><b>${teacher.phone || "—"}</b></div><div class='row'><span>রক্তের গ্রুপ:</span><b>${teacher.bloodGroup || "—"}</b></div></div></div><div class='foot'><div style='font-size:11px;color:#53634e'>কোড: ${teacher.teacherCode}</div><div class='sig'>${sigHtml}<div class='sigline'>অধ্যক্ষ / প্রধান শিক্ষক<br><small>${settings.principalName || ""}</small></div></div></div></div><div class='card'><div class='head'><div class='logo'>${logoHtml}</div><div><h3 style='margin:0;font-size:15px'>${settings.name}</h3><p style='margin:2px 0 0;font-size:11px'>অপর পৃষ্ঠা — শিক্ষক যাচাই QR ও তথ্য</p></div></div><div class='back'><div class='qr'>${qrUrl ? `<img src="${qrUrl}" width="154" height="154">` : ""}<div style='font-size:11px;font-weight:700;color:#123f24;margin-top:4px'>শিক্ষক আইডি QR</div></div><div class='info'><div><b>শিক্ষক কোড:</b> ${teacher.teacherCode} (${teacher.id})</div><div><b>যোগ্যতা:</b> ${teacher.qualification || "—"}</div><div><b>পাঠদানের শ্রেণি:</b> ${(teacher.teachingClasses || []).join(", ") || "—"}</div><div><b>প্রতিষ্ঠানের ঠিকানা:</b> ${settings.address || "—"}</div><div><b>প্রধানের মোবাইল:</b> ${settings.principalPhone || settings.phone || "—"}</div></div><div style='font-size:11px;color:#556'>কার্ডটি হারিয়ে গেলে অনুগ্রহ করে বিদ্যালয়ের অফিসে জমা দিন।</div></div></div></body></html>`;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
+    a.download = `teacher-id-card-${teacher.teacherCode || teacher.id}.html`;
+    document.body.appendChild(a); a.click(); a.remove();
+    toast("শিক্ষকের আইডি কার্ড ডাউনলোড হচ্ছে");
+  };
+
+  return (
+    <div className="modal-bg" onClick={e => { if (e.target === e.currentTarget) close(); }}>
+      <div className="modal xl">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
+          <div>
+            <h2>শিক্ষকের আইডি কার্ড (সামনে ও অপর পৃষ্ঠা)</h2>
+            <p className="sub" style={{ margin: 0 }}>{teacher.name} · {teacher.designation} · বিষয়: {teacher.subject}</p>
+          </div>
+          <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+            <button type="button" className="btn btn-brand btn-sm" onClick={onOpenProfile}>👤 সম্পূর্ণ প্রোফাইল</button>
+            <button type="button" className="btn btn-accent btn-sm" onClick={printIdCard}>🖨 প্রিন্ট</button>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={downloadIdHtml}>⬇ কার্ড ডাউনলোড</button>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={downloadQrPng} disabled={!qrUrl}>⬇ QR PNG</button>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={close}>বন্ধ করুন</button>
+          </div>
+        </div>
+
+        <div className="id-print-area">
+          <div className="id-card-pair">
+            <div className="id-card id-card-front">
+              <div className="id-card-head">
+                <div className="id-card-logo">
+                  {settings.idLogo ? <img src={settings.idLogo} alt="লোগো" /> : "👩‍🏫"}
+                </div>
+                <div className="id-card-school">
+                  <h3>{settings.name}</h3>
+                  <p>{settings.motto}</p>
+                </div>
+              </div>
+              <div className="id-card-tag" style={{ background: "#1d6b3c" }}>শিক্ষক পরিচয়পত্র · TEACHER ID CARD</div>
+              <div className="id-card-body">
+                <div className="id-photo-frame">
+                  {teacher.photo ? <img src={teacher.photo} alt={teacher.name} /> : (teacher.name || "শ").trim().charAt(0)}
+                </div>
+                <h3 className="id-stu-name" style={{ marginBottom: 2 }}>{teacher.name}</h3>
+                <div style={{ fontSize: "12px", fontWeight: 700, color: "#d97706", marginBottom: 6 }}>{teacher.designation}</div>
+                <div className="id-meta">
+                  <div className="id-meta-row"><span>বিষয়:</span><b>{teacher.subject}</b></div>
+                  <div className="id-meta-row"><span>শ্রেণি শিক্ষক:</span><b>{teacher.classTeacherClass ? `${teacher.classTeacherClass} (${teacher.classTeacherSection || "ক"})` : "নির্ধারিত নয়"}</b></div>
+                  <div className="id-meta-row"><span>যোগদানের তারিখ:</span><b>{bnDate(teacher.joinDate)}</b></div>
+                  <div className="id-meta-row"><span>মোবাইল:</span><b>{teacher.phone || "—"}</b></div>
+                  <div className="id-meta-row"><span>রক্তের গ্রুপ:</span><b>{teacher.bloodGroup || "—"}</b></div>
+                </div>
+              </div>
+              <div className="id-card-foot">
+                <div style={{ fontSize: "11px", color: "#53634e" }}>কোড: {teacher.teacherCode}</div>
+                <div className="id-sig-box">
+                  {settings.principalSignature && <img src={settings.principalSignature} alt="প্রধান শিক্ষকের স্বাক্ষর" className="id-sig-img" />}
+                  <div className="id-sig-line">
+                    প্রিন্সিপাল / প্রধান শিক্ষক
+                    {settings.principalName ? <div style={{ fontWeight: 500, fontSize: "10.5px" }}>{settings.principalName}</div> : null}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="id-card id-card-back">
+              <div className="id-card-head">
+                <div className="id-card-logo">
+                  {settings.idLogo ? <img src={settings.idLogo} alt="লোগো" /> : "👩‍🏫"}
+                </div>
+                <div className="id-card-school">
+                  <h3>{settings.name}</h3>
+                  <p>অপর পৃষ্ঠা — শিক্ষক তথ্য ও QR যাচাই</p>
+                </div>
+              </div>
+              <div className="id-back-body">
+                <div className="id-qr-box">
+                  {qrUrl ? <img src={qrUrl} alt="শিক্ষক QR কোড" /> : <div style={{ width: 154, height: 154, display: "flex", alignItems: "center", justifyContent: "center" }}>QR তৈরি হচ্ছে…</div>}
+                  <div style={{ fontSize: "11.5px", fontWeight: 700, color: "#123f24" }}>শিক্ষক পরিচিতি ও ভেরিফিকেশন QR</div>
+                  <div style={{ fontSize: "10.5px", color: "#53634e" }}>{qrPayload}</div>
+                </div>
+                <div className="id-back-info">
+                  <div><b>যোগ্যতা:</b> {teacher.qualification || "—"}</div>
+                  <div><b>পাঠদানের শ্রেণি:</b> {(teacher.teachingClasses || []).join(", ") || "—"}</div>
+                  <div><b>প্রতিষ্ঠানের ঠিকানা:</b> {settings.address || "মেইন রোড, সদর উপজেলা"}</div>
+                  <div><b>প্রধানের মোবাইল:</b> {settings.principalPhone || settings.phone || "—"}</div>
+                </div>
+                <div style={{ fontSize: "11px", color: "#53634e", lineHeight: 1.35 }}>
+                  এই পরিচয়পত্রটি {settings.name}-এর সম্পত্তি। হারিয়ে গেলে অনুগ্রহ করে বিদ্যালয়ের অফিসে জমা দিন।
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="id-controls">
+          <h3 style={{ margin: "0 0 10px", fontSize: 15.5 }}>শিক্ষকের ছবি, লোগো ও স্বাক্ষর আপলোড</h3>
+          <div className="form-grid">
+            <Field label="শিক্ষকের ছবি আপলোড">
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <input type="file" accept="image/*" onChange={e => onPhoto(e, url => { onUpdateTeacher({ photo: url }); toast("শিক্ষকের ছবি যুক্ত হয়েছে"); })} />
+                {teacher.photo && <button type="button" className="mini-btn red" onClick={() => onUpdateTeacher({ photo: "" })}>মুছুন</button>}
+              </div>
+            </Field>
+            <Field label="আইডি কার্ড লোগো (সব কার্ডে দেখাবে)">
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <input type="file" accept="image/*" onChange={e => onPhoto(e, url => { onUpdateSettings({ idLogo: url }); toast("লোগো আপলোড হয়েছে"); })} />
+                {settings.idLogo && <button type="button" className="mini-btn red" onClick={() => onUpdateSettings({ idLogo: "" })}>মুছুন</button>}
+              </div>
+            </Field>
+            <Field label="প্রিন্সিপাল / প্রধান শিক্ষকের স্বাক্ষর">
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <input type="file" accept="image/*" onChange={e => onPhoto(e, url => { onUpdateSettings({ principalSignature: url }); toast("স্বাক্ষর আপলোড হয়েছে"); })} />
+                {settings.principalSignature && <button type="button" className="mini-btn red" onClick={() => onUpdateSettings({ principalSignature: "" })}>মুছুন</button>}
+              </div>
+            </Field>
+            <Field label="প্রধানের মোবাইল নাম্বার">
+              <input value={settings.principalPhone || ""} onChange={e => onUpdateSettings({ principalPhone: e.target.value })} placeholder="01711-000100" />
+            </Field>
+          </div>
+          {photoErr && <div style={{ color: "var(--danger)", fontSize: "13px", marginTop: 6 }}>{photoErr}</div>}
+        </div>
+      </div>
+    </div>
   );
 }
 function SimpleForm({ title, fields, close, save }) {
@@ -4351,6 +5605,12 @@ function QrAttendanceDevice({ data, attDate, setAttDate, onScanCode, autoPayload
       return;
     }
     lastScanCooldownRef.current = { code, ts: now };
+    const tch = decodeTeacherQrPayload(code, data.teachers || []);
+    if (tch) {
+      setLastResult({ ok: false, isTeacherCard: true, teacher: tch, raw: code });
+      toast("এটি শিক্ষকের আইডি কার্ড — শিক্ষার্থীর হাজিরার জন্য নয়", true);
+      return;
+    }
     const res = onScanCode(code, attDate);
     if (res && res.ok) {
       setLastResult(res);
@@ -4533,9 +5793,25 @@ function QrAttendanceDevice({ data, attDate, setAttDate, onScanCode, autoPayload
             শিক্ষার্থীর আইডি কার্ডের অপর পৃষ্ঠার QR কোড স্ক্যান করলে এখানে তার ছবি দেখাবে এবং নাম, রোল ও শাখাসহ হাজিরা শিটে জমা হবে।
           </div>
         ) : !lastResult.ok ? (
-          <div className="note-box" style={{ background: "var(--danger-soft)", color: "var(--danger)" }}>
-            <b>অবৈধ বা অজানা QR কোড:</b> {lastResult.raw}
-          </div>
+          lastResult.isTeacherCard ? (
+            <div className="note-box" style={{ display: "flex", gap: 12, alignItems: "center" }}>
+              {lastResult.teacher && lastResult.teacher.photo ? (
+                <img src={lastResult.teacher.photo} alt={lastResult.teacher.name} className="stu-ava" style={{ borderRadius: "50%" }} />
+              ) : null}
+              <div>
+                <b>এটি শিক্ষকের আইডি কার্ড ({lastResult.raw})</b>
+                <div style={{ fontSize: "13.5px" }}>
+                  {lastResult.teacher && !lastResult.teacher.unknownTeacher
+                    ? `${lastResult.teacher.name} — বিষয়: ${lastResult.teacher.subject} · শিক্ষার্থীর হাজিরার জন্য শিক্ষার্থীর আইডি কার্ড স্ক্যান করুন।`
+                    : "শিক্ষার্থীর হাজিরার জন্য শিক্ষার্থীর আইডি কার্ড স্ক্যান করুন।"}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="note-box" style={{ background: "var(--danger-soft)", color: "var(--danger)" }}>
+              <b>অবৈধ বা অজানা QR কোড:</b> {lastResult.raw}
+            </div>
+          )
         ) : (
           <div className="qr-result-card">
             <div className="qr-result-photo">
@@ -4825,6 +6101,8 @@ function App() {
   const toastTimer = useRef(null);
   const lastSyncedRef = useRef(null);
   const isHydratedRef = useRef(false);
+  const userClearedTeachersRef = useRef(false);
+  const teachersAutoSeededRef = useRef(false);
   const syncTimerRef = useRef(null);
   const lastLocalWriteAtRef = useRef(0);
   const dataRef = useRef(data);
@@ -4849,12 +6127,16 @@ function App() {
       issuedLoansCount: Number(snapData.issuedLoansCount || 0),
     });
     setData(prev => {
+      const rawTeachers = Array.isArray(snapData.teachers) ? snapData.teachers : [];
+      const nextTeachers = rawTeachers.length > 0
+        ? rawTeachers.map(t => normalizeTeacherRecord(t, false))
+        : (userClearedTeachersRef.current ? [] : (prev.teachers.length > 0 ? prev.teachers : defaultSubjectTeachers(false)));
       const next = {
         ...prev,
         settings: snapData.settings ? { ...prev.settings, ...snapData.settings } : prev.settings,
         classes: Array.isArray(snapData.classes) && snapData.classes.length ? snapData.classes : prev.classes,
         subjects: Array.isArray(snapData.subjects) && snapData.subjects.length ? snapData.subjects : prev.subjects,
-        teachers: Array.isArray(snapData.teachers) ? snapData.teachers : prev.teachers,
+        teachers: nextTeachers,
         notices: Array.isArray(snapData.notices) ? snapData.notices : prev.notices,
         books: Array.isArray(snapData.books) ? snapData.books : prev.books,
         routes: Array.isArray(snapData.routes) ? snapData.routes : prev.routes,
@@ -4883,6 +6165,7 @@ function App() {
 
   const applyFullSnapshot = snapData => {
     if (!snapData) return;
+    const isAdminReader = Boolean(userRef.current && userRef.current.role !== "student");
     setPublicStats({
       fromServer: true,
       studentCount: Array.isArray(snapData.students) ? snapData.students.length : Number(snapData.studentCount || 0),
@@ -4892,12 +6175,17 @@ function App() {
         : Number(snapData.issuedLoansCount || 0),
     });
     setData(prev => {
+      const rawTeachers = Array.isArray(snapData.teachers) ? snapData.teachers : [];
+      const shouldSeedTeachers = rawTeachers.length === 0 && !userClearedTeachersRef.current;
+      const nextTeachers = rawTeachers.length > 0
+        ? rawTeachers.map(t => normalizeTeacherRecord(t, isAdminReader))
+        : (userClearedTeachersRef.current ? [] : defaultSubjectTeachers(isAdminReader));
       const next = {
         ...prev,
         settings: snapData.settings ? { ...prev.settings, ...snapData.settings } : prev.settings,
         classes: Array.isArray(snapData.classes) && snapData.classes.length ? snapData.classes : prev.classes,
         subjects: Array.isArray(snapData.subjects) && snapData.subjects.length ? snapData.subjects : prev.subjects,
-        teachers: Array.isArray(snapData.teachers) ? snapData.teachers : prev.teachers,
+        teachers: nextTeachers,
         notices: Array.isArray(snapData.notices) ? snapData.notices : prev.notices,
         books: Array.isArray(snapData.books) ? snapData.books : prev.books,
         routes: Array.isArray(snapData.routes) ? snapData.routes : prev.routes,
@@ -4920,7 +6208,12 @@ function App() {
         expenses: Array.isArray(snapData.expenses) ? snapData.expenses : prev.expenses,
         officeDocs: Array.isArray(snapData.officeDocs) ? snapData.officeDocs : prev.officeDocs,
       };
-      lastSyncedRef.current = next;
+      if (shouldSeedTeachers && !teachersAutoSeededRef.current && isAdminReader) {
+        teachersAutoSeededRef.current = true;
+        lastSyncedRef.current = { ...next, teachers: [] };
+      } else {
+        lastSyncedRef.current = next;
+      }
       isHydratedRef.current = true;
       return next;
     });
@@ -5143,7 +6436,8 @@ function App() {
             logout={logout}
             syncStatus={syncStatus}
             onForceSync={forceFullSync}
-            onRefreshFromDb={refreshFromDb} />
+            onRefreshFromDb={refreshFromDb}
+            onTeachersCleared={() => { userClearedTeachersRef.current = true; }} />
         : <Landing data={data} user={user} goConsole={goConsole} openLogin={() => setLoginOpen(true)} logout={logout} openAdmission={() => setAdmissionOpen(true)} toast={toast} publicStats={publicStats} />}
       {loginOpen && <LoginModal close={() => setLoginOpen(false)} onLogin={onLogin} />}
       {admissionOpen && <AdmissionModal close={() => setAdmissionOpen(false)} submit={submitAdmission} showCost={data.settings.showYearlyCostAtAdmission !== false} costTypes={costTypesOf(data)} classList={classOptionsOf(data)} classes={data.classes} />}

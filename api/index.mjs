@@ -340,6 +340,7 @@ async function loadPublicSnapshot() {
       boardBooksRes.rows,
       extraActsRes.rows
     );
+    const teacherMetaMap = await loadTeacherMetaMapFromSupabase(client);
     return {
       ok: true,
       configured: true,
@@ -355,14 +356,9 @@ async function loadPublicSnapshot() {
           group: String(r.book_group || "\u09B8\u09BE\u09A7\u09BE\u09B0\u09A3"),
           section: String(r.section || "\u09B8\u09AC \u09B6\u09BE\u0996\u09BE")
         })),
-        teachers: teachersRes.rows.map((r) => ({
-          id: String(r.id || ""),
-          name: String(r.name || ""),
-          subject: String(r.subject || ""),
-          phone: String(r.phone || ""),
-          qualification: String(r.qualification || ""),
-          photo: String(r.photo || "")
-        })),
+        teachers: teachersRes.rows.map(
+          (r) => mergeTeacherRow(r, teacherMetaMap[String(r.id || "")], false)
+        ),
         notices: noticesRes.rows.map((r) => ({
           id: String(r.id || ""),
           title: String(r.title || ""),
@@ -487,12 +483,27 @@ async function loadFullSnapshot(includeOfficeSensitive) {
         officeAttendance[dt][eid] = String(r.status || "P");
       }
     }
+    const rawTeacherRows = await fetchAllRows(client, "teachers", "*", "id").catch(() => ({ rows: [], error: null }));
+    const metaDocRow = docsRes.rows.find((r) => String(r.id || "") === "__teacher_profiles_v1__");
+    let fullMetaMap = {};
+    if (metaDocRow && metaDocRow.note) {
+      try {
+        const parsed = JSON.parse(String(metaDocRow.note || "{}"));
+        if (parsed && typeof parsed === "object") fullMetaMap = parsed;
+      } catch {
+        fullMetaMap = {};
+      }
+    } else if (includeOfficeSensitive) {
+      fullMetaMap = await loadTeacherMetaMapFromSupabase(client);
+    }
+    const teachersWithDetails = includeOfficeSensitive && rawTeacherRows.rows.length ? rawTeacherRows.rows.map((r) => mergeTeacherRow(r, fullMetaMap[String(r.id || "")], true)) : pub.data.teachers;
     return {
       ok: true,
       configured: true,
       schemaReady: true,
       data: {
         ...pub.data,
+        teachers: teachersWithDetails,
         students: studentsRes.rows.map((r) => ({
           id: String(r.id || ""),
           name: String(r.name || ""),
@@ -596,7 +607,11 @@ async function loadFullSnapshot(includeOfficeSensitive) {
           note: String(r.note || "")
         })),
         officeDocs: docsRes.rows.filter(
-          (r) => String(r.id || "") !== "__master_auth_v1__" && String(r.category || "") !== "__system_auth__"
+          (r) => {
+            const id = String(r.id || "");
+            const cat = String(r.category || "");
+            return id !== "__master_auth_v1__" && cat !== "__system_auth__" && id !== "__teacher_profiles_v1__" && cat !== "__system_teacher_meta__";
+          }
         ).map((r) => ({
           id: String(r.id || ""),
           title: String(r.title || ""),
@@ -819,22 +834,53 @@ async function syncSlicesToSupabase(changes, removals, options) {
     }
     if (Array.isArray(removals.teachers) && removals.teachers.length) {
       await deleteIdsInChunks(client, "teachers", removals.teachers);
+      await saveTeacherMetaToSupabase(client, [], removals.teachers);
       touchedTables.push("teachers");
     }
     if (Array.isArray(changes.teachers)) {
-      await upsertInChunks(
-        client,
-        "teachers",
-        changes.teachers.map((r) => ({
-          id: String(r.id || ""),
-          name: String(r.name || ""),
-          subject: String(r.subject || ""),
-          phone: String(r.phone || ""),
-          qualification: String(r.qualification || ""),
-          photo: String(r.photo || ""),
-          updated_at: now
-        }))
-      );
+      const teacherRecs = changes.teachers;
+      const fullRows = teacherRecs.map((r) => ({
+        id: String(r.id || ""),
+        name: String(r.name || ""),
+        teacher_code: String(r.teacherCode || ""),
+        subject: String(r.subject || ""),
+        designation: String(r.designation || ""),
+        phone: String(r.phone || ""),
+        email: String(r.email || ""),
+        qualification: String(r.qualification || ""),
+        join_date: String(r.joinDate || ""),
+        monthly_salary: Number(r.monthlySalary || 0),
+        monthly_allowance: Number(r.monthlyAllowance || 0),
+        class_teacher_class: String(r.classTeacherClass || ""),
+        class_teacher_section: String(r.classTeacherSection || ""),
+        teaching_classes: Array.isArray(r.teachingClasses) ? r.teachingClasses : [],
+        teaching_assignments: Array.isArray(r.teachingAssignments) ? r.teachingAssignments : [],
+        salary_history: Array.isArray(r.salaryHistory) ? r.salaryHistory : [],
+        blood_group: String(r.bloodGroup || ""),
+        address: String(r.address || ""),
+        status: String(r.status || "\u09B8\u0995\u09CD\u09B0\u09BF\u09AF\u09BC"),
+        photo: String(r.photo || ""),
+        updated_at: now
+      }));
+      try {
+        await upsertInChunks(client, "teachers", fullRows);
+      } catch (tErr) {
+        if (!isSchemaMissingError(tErr)) throw tErr;
+        await upsertInChunks(
+          client,
+          "teachers",
+          teacherRecs.map((r) => ({
+            id: String(r.id || ""),
+            name: String(r.name || ""),
+            subject: String(r.subject || ""),
+            phone: String(r.phone || ""),
+            qualification: String(r.qualification || ""),
+            photo: String(r.photo || ""),
+            updated_at: now
+          }))
+        );
+      }
+      await saveTeacherMetaToSupabase(client, teacherRecs, []);
       touchedTables.push("teachers");
     }
     if (Array.isArray(removals.notices) && removals.notices.length) {
@@ -1132,7 +1178,10 @@ async function syncSlicesToSupabase(changes, removals, options) {
         touchedTables.push("expenses");
       }
       if (Array.isArray(removals.officeDocs) && removals.officeDocs.length) {
-        const safeIds = removals.officeDocs.filter((id) => String(id || "") !== "__master_auth_v1__");
+        const safeIds = removals.officeDocs.filter((id) => {
+          const s = String(id || "");
+          return s !== "__master_auth_v1__" && s !== "__teacher_profiles_v1__";
+        });
         if (safeIds.length) {
           await deleteIdsInChunks(client, "office_docs", safeIds);
           touchedTables.push("office_docs");
@@ -1140,7 +1189,11 @@ async function syncSlicesToSupabase(changes, removals, options) {
       }
       if (Array.isArray(changes.officeDocs)) {
         const safeDocs = changes.officeDocs.filter(
-          (r) => String(r.id || "") !== "__master_auth_v1__" && String(r.category || "") !== "__system_auth__"
+          (r) => {
+            const id = String(r.id || "");
+            const cat = String(r.category || "");
+            return id !== "__master_auth_v1__" && cat !== "__system_auth__" && id !== "__teacher_profiles_v1__" && cat !== "__system_teacher_meta__";
+          }
         );
         await upsertInChunks(
           client,
@@ -1449,6 +1502,91 @@ async function saveMasterAuthToSupabase(cred) {
   } catch {
     return false;
   }
+}
+async function loadTeacherMetaMapFromSupabase(client) {
+  try {
+    const { data, error } = await client.from("office_docs").select("id, category, note").eq("id", "__teacher_profiles_v1__").maybeSingle();
+    if (error || !data) return {};
+    if (String(data.category || "") !== "__system_teacher_meta__") return {};
+    const parsed = JSON.parse(String(data.note || "{}"));
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+async function saveTeacherMetaToSupabase(client, recs, removedIds) {
+  try {
+    const cur = await loadTeacherMetaMapFromSupabase(client);
+    for (const rid of removedIds) {
+      const k = String(rid || "").trim();
+      if (k) delete cur[k];
+    }
+    for (const r of recs) {
+      const id = String(r.id || "").trim();
+      if (!id) continue;
+      cur[id] = {
+        teacherCode: String(r.teacherCode || ""),
+        designation: String(r.designation || ""),
+        joinDate: String(r.joinDate || ""),
+        monthlySalary: Number(r.monthlySalary || 0),
+        monthlyAllowance: Number(r.monthlyAllowance || 0),
+        classTeacherClass: String(r.classTeacherClass || ""),
+        classTeacherSection: String(r.classTeacherSection || ""),
+        teachingClasses: Array.isArray(r.teachingClasses) ? r.teachingClasses : [],
+        teachingAssignments: Array.isArray(r.teachingAssignments) ? r.teachingAssignments : [],
+        salaryHistory: Array.isArray(r.salaryHistory) ? r.salaryHistory : [],
+        subjects: Array.isArray(r.subjects) ? r.subjects : [],
+        email: String(r.email || ""),
+        bloodGroup: String(r.bloodGroup || ""),
+        address: String(r.address || ""),
+        status: String(r.status || "\u09B8\u0995\u09CD\u09B0\u09BF\u09AF\u09BC")
+      };
+    }
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    await client.from("office_docs").upsert(
+      {
+        id: "__teacher_profiles_v1__",
+        title: "Teacher Extended Profiles",
+        category: "__system_teacher_meta__",
+        doc_date: now.slice(0, 10),
+        note: JSON.stringify(cur),
+        updated_at: now
+      },
+      { onConflict: "id" }
+    );
+  } catch {
+  }
+}
+function mergeTeacherRow(r, meta, includeSalary) {
+  const m = meta || {};
+  const teachingClasses = Array.isArray(r.teaching_classes) && r.teaching_classes.length ? r.teaching_classes : Array.isArray(m.teachingClasses) ? m.teachingClasses : [];
+  const teachingAssignments = Array.isArray(r.teaching_assignments) && r.teaching_assignments.length ? r.teaching_assignments : Array.isArray(m.teachingAssignments) ? m.teachingAssignments : [];
+  const base = {
+    id: String(r.id || ""),
+    name: String(r.name || ""),
+    teacherCode: String(r.teacher_code || m.teacherCode || ""),
+    subject: String(r.subject || ""),
+    subjects: Array.isArray(m.subjects) ? m.subjects : [],
+    designation: String(r.designation || m.designation || ""),
+    phone: String(r.phone || ""),
+    qualification: String(r.qualification || ""),
+    joinDate: String(r.join_date || m.joinDate || ""),
+    classTeacherClass: String(r.class_teacher_class || m.classTeacherClass || ""),
+    classTeacherSection: String(r.class_teacher_section || m.classTeacherSection || ""),
+    teachingClasses,
+    teachingAssignments,
+    bloodGroup: String(r.blood_group || m.bloodGroup || ""),
+    status: String(r.status || m.status || "\u09B8\u0995\u09CD\u09B0\u09BF\u09AF\u09BC"),
+    photo: String(r.photo || "")
+  };
+  if (includeSalary) {
+    base.email = String(r.email || m.email || "");
+    base.address = String(r.address || m.address || "");
+    base.monthlySalary = Number(r.monthly_salary || m.monthlySalary || 0);
+    base.monthlyAllowance = Number(r.monthly_allowance || m.monthlyAllowance || 0);
+    base.salaryHistory = Array.isArray(r.salary_history) && r.salary_history.length ? r.salary_history : Array.isArray(m.salaryHistory) ? m.salaryHistory : [];
+  }
+  return base;
 }
 
 // appServer.ts
