@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build",
+    "vercel-build": "vite build && esbuild api/_handler.ts --bundle --platform=node --format=esm --packages=external --outfile=api/index.mjs",
     "start": "node server.ts",
     "preview": "vite preview --host 0.0.0.0 --port 3000"
   },
