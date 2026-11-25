@@ -5,8 +5,23 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
+import {
+  loadDotEnvFile,
+  getSupabaseStatus,
+  loadPublicSnapshot,
+  loadFullSnapshot,
+  syncSlicesToSupabase,
+  createPublicAdmissionInSupabase,
+  uploadMediaToSupabase,
+  deleteMediaFromSupabase,
+  registerSseClient,
+  startSupabaseRealtimeBridge,
+} from "./supabaseSync.ts";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+loadDotEnvFile(path.resolve(__dirname, ".env"));
 
 const PORT = 3000;
 const HOST = "0.0.0.0";
@@ -24,6 +39,7 @@ const ALL_MODULES = [
   "library",
   "transport",
   "admissions",
+  "media",
   "employees",
   "departments",
   "office-attendance",
@@ -47,6 +63,7 @@ const STAFF_MODULES = [
   "routine",
   "library",
   "transport",
+  "media",
 ];
 
 const STUDENT_MODULES = [
@@ -449,6 +466,129 @@ async function startServer() {
     });
   });
 
+  // ============================================================
+  // Supabase ডাটাবেস, ফটো/ভিডিও স্টোরেজ ও লাইভ রিয়েলটাইম API
+  // ============================================================
+
+  app.get("/api/school/status", async (_req: Request, res: Response) => {
+    const status = await getSupabaseStatus();
+    res.json(status);
+  });
+
+  app.get("/api/school/public", async (_req: Request, res: Response) => {
+    const snap = await loadPublicSnapshot();
+    res.json(snap);
+  });
+
+  app.post("/api/school/admissions", async (req: Request, res: Response) => {
+    const b = req.body || {};
+    const name = typeof b.name === "string" ? b.name.trim() : "";
+    const cls = typeof b.cls === "string" ? b.cls.trim() : "";
+    const guardian = typeof b.guardian === "string" ? b.guardian.trim() : "";
+    const phone = typeof b.phone === "string" ? b.phone.trim() : "";
+    if (!name || !cls || !guardian || !phone) {
+      return res.status(400).json({
+        ok: false,
+        message: "শিক্ষার্থীর নাম, শ্রেণি, অভিভাবকের নাম ও মোবাইল নম্বর আবশ্যক।",
+      });
+    }
+    const result = await createPublicAdmissionInSupabase({
+      id: typeof b.id === "string" ? b.id : undefined,
+      name,
+      cls,
+      section: typeof b.section === "string" ? b.section : "ক",
+      guardian,
+      phone,
+      address: typeof b.address === "string" ? b.address : "",
+      date: typeof b.date === "string" ? b.date : undefined,
+    });
+    if (!result.ok) {
+      return res.status(result.schemaReady ? 500 : 503).json(result);
+    }
+    return res.json(result);
+  });
+
+  app.get("/api/school/bootstrap", requireAuth, async (req: AuthedRequest, res: Response) => {
+    const u = req.authUser!;
+    const includeOfficeSensitive = Boolean(u.isMasterAdmin || u.role === "master" || u.role === "admin");
+    const snap = await loadFullSnapshot(includeOfficeSensitive);
+    res.json(snap);
+  });
+
+  app.post(
+    "/api/school/sync",
+    requireAuth,
+    express.json({ limit: "15mb" }),
+    async (req: AuthedRequest, res: Response) => {
+      const u = req.authUser!;
+      if (u.role === "student") {
+        return res.status(403).json({
+          ok: false,
+          message: "শিক্ষার্থী অ্যাকাউন্ট থেকে ডেটা পরিবর্তন অনুমোদিত নয়।",
+        });
+      }
+      const changes = req.body?.changes && typeof req.body.changes === "object" ? req.body.changes : {};
+      const removals = req.body?.removals && typeof req.body.removals === "object" ? req.body.removals : {};
+      const result = await syncSlicesToSupabase(changes, removals, {
+        isMaster: Boolean(u.isMasterAdmin || u.role === "master"),
+      });
+      if (!result.ok) {
+        return res.status(result.schemaReady ? 500 : 503).json(result);
+      }
+      return res.json(result);
+    }
+  );
+
+  app.post(
+    "/api/media/upload",
+    requireAuth,
+    express.json({ limit: "60mb" }),
+    async (req: AuthedRequest, res: Response) => {
+      const u = req.authUser!;
+      if (u.role === "student") {
+        return res.status(403).json({
+          ok: false,
+          message: "ফটো বা ভিডিও আপলোডের অনুমতি নেই।",
+        });
+      }
+      const b = req.body || {};
+      if (typeof b.base64Data !== "string" || !b.base64Data) {
+        return res.status(400).json({ ok: false, error: "ফাইল ডেটা পাওয়া যায়নি।" });
+      }
+      const result = await uploadMediaToSupabase({
+        base64Data: b.base64Data,
+        mimeType: typeof b.mimeType === "string" ? b.mimeType : "",
+        title: typeof b.title === "string" ? b.title : undefined,
+        category: typeof b.category === "string" ? b.category : undefined,
+        description: typeof b.description === "string" ? b.description : undefined,
+        saveToGallery: b.saveToGallery !== false,
+      });
+      if (!result.ok) {
+        return res.status(result.status || 500).json(result);
+      }
+      return res.json(result);
+    }
+  );
+
+  app.delete("/api/media/:id", requireAuth, async (req: AuthedRequest, res: Response) => {
+    const u = req.authUser!;
+    if (u.role === "student") {
+      return res.status(403).json({
+        ok: false,
+        message: "মিডিয়া মোছার অনুমতি নেই।",
+      });
+    }
+    const result = await deleteMediaFromSupabase(String(req.params.id || ""));
+    if (!result.ok) {
+      return res.status(500).json(result);
+    }
+    return res.json(result);
+  });
+
+  app.get("/api/school/events", (_req: Request, res: Response) => {
+    registerSseClient(res);
+  });
+
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
@@ -459,8 +599,8 @@ async function startServer() {
   } else {
     const distDir = path.resolve(__dirname, "dist");
     app.use(express.static(distDir));
-    app.get("*", (req: Request, res: Response, next: NextFunction) => {
-      if (req.path.startsWith("/api/")) return next();
+    app.use((req: Request, res: Response, next: NextFunction) => {
+      if (req.method !== "GET" || req.path.startsWith("/api/")) return next();
       const indexFile = path.join(distDir, "index.html");
       if (fs.existsSync(indexFile)) {
         return res.sendFile(indexFile);
@@ -470,6 +610,7 @@ async function startServer() {
   }
 
   app.listen(PORT, HOST, () => {
+    startSupabaseRealtimeBridge();
     console.log(`Server listening on http://${HOST}:${PORT}`);
   });
 }

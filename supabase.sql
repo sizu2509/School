@@ -15,6 +15,9 @@ create table if not exists public.school_settings (
   email text default '',
   show_yearly_cost_at_admission boolean not null default true,
   principal_name text default '',
+  principal_phone text default '',
+  id_logo text default '',
+  principal_signature text default '',
   principal_msg text default '',
   fb text default '',
   yt text default '',
@@ -30,6 +33,7 @@ create table if not exists public.classes (
   sections text default 'ক, খ, গ',
   room text default '',
   capacity integer not null default 0,
+  extra_activities jsonb not null default '[]'::jsonb,
   updated_at timestamptz not null default now()
 );
 
@@ -40,6 +44,7 @@ create table if not exists public.class_sections (
   section_name text not null,
   room_no text not null default '',
   seat_capacity integer not null default 40,
+  subjects jsonb,
   updated_at timestamptz not null default now(),
   unique (class_id, section_name)
 );
@@ -51,6 +56,7 @@ create table if not exists public.subjects (
   code text default '',
   classes text default 'সব শ্রেণি',
   book_group text default 'সাধারণ',
+  section text default 'সব শাখা',
   updated_at timestamptz not null default now()
 );
 
@@ -88,6 +94,8 @@ create table if not exists public.students (
   phone text default '',
   payable numeric not null default 0,
   paid numeric not null default 0,
+  photo text default '',
+  admission_date text default '',
   updated_at timestamptz not null default now()
 );
 
@@ -141,6 +149,7 @@ create table if not exists public.attendance (
   cls text default '',
   student_id text not null references public.students(id) on delete cascade,
   status text not null default 'P',
+  scan_time text default '',
   updated_at timestamptz not null default now()
 );
 
@@ -286,6 +295,91 @@ create table if not exists public.student_costs (
 );
 
 -- ============================================================
+-- শিক্ষার্থীর পেমেন্ট হিস্টোরি ও ওয়েবসাইট ফটো/ভিডিও মিডিয়া
+-- ============================================================
+
+create table if not exists public.student_payment_history (
+  id text primary key,
+  student_id text not null references public.students(id) on delete cascade,
+  pay_date text not null default '',
+  pay_time text default '',
+  head text not null default '',
+  amount numeric not null default 0,
+  note text default '',
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.school_media (
+  id text primary key,
+  title text not null default '',
+  media_type text not null default 'photo' check (media_type in ('photo', 'video')),
+  category text not null default 'গ্যালারি',
+  file_url text not null default '',
+  storage_path text default '',
+  description text default '',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+-- পুরনো টেবিল থাকলে নতুন কলাম নিরাপদে যোগ করুন (Idempotent Upgrade)
+alter table public.school_settings add column if not exists principal_phone text default '';
+alter table public.school_settings add column if not exists id_logo text default '';
+alter table public.school_settings add column if not exists principal_signature text default '';
+alter table public.classes add column if not exists extra_activities jsonb not null default '[]'::jsonb;
+alter table public.class_sections add column if not exists subjects jsonb;
+alter table public.subjects add column if not exists section text default 'সব শাখা';
+alter table public.students add column if not exists photo text default '';
+alter table public.students add column if not exists admission_date text default '';
+alter table public.attendance add column if not exists scan_time text default '';
+
+-- পারফরম্যান্স ইনডেক্স
+create index if not exists idx_students_cls_section on public.students(cls, section);
+create index if not exists idx_student_costs_sid on public.student_costs(student_id);
+create index if not exists idx_payment_history_sid on public.student_payment_history(student_id);
+create index if not exists idx_attendance_date_cls on public.attendance(att_date, cls);
+create index if not exists idx_school_media_type_created on public.school_media(media_type, created_at desc);
+
+-- ============================================================
+-- Supabase Storage Bucket (ফটো ও ভিডিও আপলোডের জন্য 'school-media')
+-- ============================================================
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'school-media',
+  'school-media',
+  true,
+  52428800,
+  array[
+    'image/jpeg', 'image/png', 'image/webp', 'image/gif',
+    'video/mp4', 'video/webm', 'video/ogg', 'video/quicktime'
+  ]
+)
+on conflict (id) do update set
+  public = true,
+  file_size_limit = 52428800,
+  allowed_mime_types = excluded.allowed_mime_types;
+
+drop policy if exists "school_media_public_read" on storage.objects;
+create policy "school_media_public_read"
+  on storage.objects for select to anon, authenticated
+  using (bucket_id = 'school-media');
+
+drop policy if exists "school_media_public_insert" on storage.objects;
+create policy "school_media_public_insert"
+  on storage.objects for insert to anon, authenticated
+  with check (bucket_id = 'school-media');
+
+drop policy if exists "school_media_public_update" on storage.objects;
+create policy "school_media_public_update"
+  on storage.objects for update to anon, authenticated
+  using (bucket_id = 'school-media')
+  with check (bucket_id = 'school-media');
+
+drop policy if exists "school_media_public_delete" on storage.objects;
+create policy "school_media_public_delete"
+  on storage.objects for delete to anon, authenticated
+  using (bucket_id = 'school-media');
+
+-- ============================================================
 -- Row Level Security (RLS) চালু ও নীতি
 -- ============================================================
 
@@ -296,6 +390,8 @@ alter table public.subjects enable row level security;
 alter table public.board_books enable row level security;
 alter table public.class_extra_activities enable row level security;
 alter table public.students enable row level security;
+alter table public.student_payment_history enable row level security;
+alter table public.school_media enable row level security;
 alter table public.teachers enable row level security;
 alter table public.notices enable row level security;
 alter table public.admissions enable row level security;
@@ -321,7 +417,7 @@ declare
   tbl text;
   tbls text[] := array[
     'school_settings', 'classes', 'class_sections', 'subjects', 'board_books',
-    'class_extra_activities', 'students',
+    'class_extra_activities', 'students', 'student_payment_history', 'school_media',
     'teachers', 'notices', 'admissions', 'fees', 'attendance', 'results',
     'books', 'book_loans', 'transport_routes', 'departments', 'employees',
     'office_attendance', 'leaves', 'payroll', 'tasks', 'expenses',
@@ -333,6 +429,17 @@ begin
     execute format('create policy "school_all_access" on public.%I for all to anon, authenticated using (true) with check (true);', tbl);
   end loop;
 end $$;
+
+-- ডিফল্ট স্কুল সেটিংস (প্রথমবার থাকলে কিছু পরিবর্তন করবে না)
+insert into public.school_settings (
+  id, name, motto, address, principal_msg
+) values (
+  'main',
+  'আমার স্কুল',
+  'জ্ঞানেই আলো, চরিত্রেই শক্তি',
+  'মেইন রোড, সদর উপজেলা',
+  'শিক্ষাই জাতির মেরুদণ্ড। আমাদের লক্ষ্য প্রতিটি শিক্ষার্থীকে জ্ঞান, চরিত্র ও মানবিক মূল্যবোধে গড়ে তোলা — যাতে তারা আগামীর বাংলাদেশ গড়ার কারিগর হতে পারে।'
+) on conflict (id) do nothing;
 
 -- ============================================================
 -- প্রাথমিক ডেটা: প্লে থেকে দ্বাদশ শ্রেণি (১৫টি শ্রেণি ও ৪৫টি শাখা)
@@ -629,16 +736,83 @@ insert into public.students (id, name, cls, roll, section, guardian, phone, paya
   ('s-twelve-1',  'আশরাফুল আলম',        'দ্বাদশ',    1, 'সাইন্স',  'মোঃ শামসুল আলম',     '01711-211501', 33500, 33500),
   ('s-twelve-2',  'সাদিয়া আফরোজ',       'দ্বাদশ',    2, 'ইকমার্স', 'মাহফুজা খাতুন',       '01913-211502', 33500, 24500),
   ('s-twelve-3',  'হাসিবুল হাসান',       'দ্বাদশ',    3, 'মানবিক',  'মোঃ ফিরোজ কবির',     '01515-211503', 33500, 12500)
-on conflict (id) do update set
-  name = excluded.name,
-  cls = excluded.cls,
-  roll = excluded.roll,
-  section = excluded.section,
-  guardian = excluded.guardian,
-  phone = excluded.phone,
-  payable = excluded.payable,
-  paid = excluded.paid,
-  updated_at = now();
+on conflict (id) do nothing;
+
+-- ============================================================
+-- প্রতিটি শ্রেণি ও শাখায় আসন অনুযায়ী পূর্ণ শিক্ষার্থী (১,৯০৫ জন) সিড
+-- ============================================================
+do $$
+declare
+  first_names text[] := array[
+    'আরিয়ান', 'মুনতাহা', 'জায়ান', 'তানিশা', 'আহনাফ', 'নুসাইবা', 'রাইয়ান', 'সাবিহা', 'ইহসান', 'আফরান',
+    'মেহজাবিন', 'তাওহীদ', 'নাবিহা', 'সাফওয়ান', 'তাসফিয়া', 'ফাহিম', 'আরিবা', 'নাফিস', 'সাদিয়া', 'তানভীর',
+    'মালিহা', 'তাহমিদ', 'রাইসা', 'সাকিব', 'মারিয়া', 'আরিফুল', 'জান্নাতুল', 'নাঈমুর', 'তাসনিম', 'রাফিউজ্জামান',
+    'সুমাইয়া', 'মেহেদী', 'আবীর', 'নুসরাত', 'সাব্বির', 'ফারহান', 'তানহা', 'রাকিবুল', 'মুশফিকুর', 'লামিয়া',
+    'তৌহিদুল', 'আশরাফুল', 'হাসিবুল', 'আরাফাত', 'ফারিহা', 'জুবায়ের', 'তাবাসসুম', 'আদনান', 'জারা', 'শাদমান'
+  ];
+  last_names text[] := array[
+    'আহমেদ', 'ইসলাম', 'হোসেন', 'রহমান', 'হাসান', 'আক্তার', 'চৌধুরী', 'খান', 'করিম', 'মাহমুদ',
+    'হক', 'সুলতানা', 'জাহান', 'খাতুন', 'আলম', 'সিদ্দিক', 'সরকার', 'মিয়া', 'উদ্দিন', 'তালুকদার'
+  ];
+  g_prefixes text[] := array['মোঃ', 'আব্দুল', 'কামরুল', 'মিজানুর', 'রফিকুল', 'শফিকুল', 'নজরুল', 'মাহবুবুর', 'আমিনুল', 'সাইফুল'];
+  ph_prefixes text[] := array['017', '018', '019', '016', '015', '013'];
+  paid_samples numeric[] := array[33500, 33500, 28500, 25000, 22000, 18500, 15000, 12000, 8500, 5000, 0];
+
+  cls_rec record;
+  sec_rec record;
+  c_idx int := 0;
+  s_idx int := 0;
+  cur_cnt int := 0;
+  max_roll int := 0;
+  missing_cnt int := 0;
+  seq_cnt int := 45;
+  k int := 0;
+  r_num int := 0;
+  sid text;
+  f_name text;
+  l_name text;
+  g_pre text;
+  g_first text;
+  ph_num text;
+  paid_val numeric;
+begin
+  for cls_rec in select id, name, display_order from public.classes order by display_order asc loop
+    c_idx := cls_rec.display_order - 1;
+    select coalesce(max(roll), 0) into max_roll from public.students where cls = cls_rec.name;
+    s_idx := 0;
+    for sec_rec in
+      select id, section_name, seat_capacity
+      from public.class_sections
+      where class_id = cls_rec.id
+      order by id asc
+    loop
+      select count(*) into cur_cnt
+      from public.students
+      where cls = cls_rec.name and section = sec_rec.section_name;
+      missing_cnt := greatest(0, coalesce(sec_rec.seat_capacity, 0) - cur_cnt);
+      for k in 0..(missing_cnt - 1) loop
+        seq_cnt := seq_cnt + 1;
+        max_roll := max_roll + 1;
+        r_num := max_roll;
+        sid := 's-full-' || (c_idx + 1) || '-' || (s_idx + 1) || '-' || (cur_cnt + k + 1);
+        f_name := first_names[1 + ((c_idx * 17 + s_idx * 11 + k * 3 + r_num) % array_length(first_names, 1))];
+        l_name := last_names[1 + ((c_idx * 7 + s_idx * 13 + k * 5 + r_num) % array_length(last_names, 1))];
+        g_pre := g_prefixes[1 + ((c_idx + s_idx + k) % array_length(g_prefixes, 1))];
+        g_first := first_names[1 + ((c_idx * 5 + s_idx * 9 + k * 7 + 3) % array_length(first_names, 1))];
+        ph_num := ph_prefixes[1 + ((seq_cnt + k) % array_length(ph_prefixes, 1))]
+          || lpad((11 + ((c_idx * 7 + s_idx * 3 + k) % 88))::text, 2, '0')
+          || '-'
+          || lpad((100000 + ((seq_cnt * 7919) % 899999))::text, 6, '0');
+        paid_val := paid_samples[1 + ((c_idx + s_idx + k) % array_length(paid_samples, 1))];
+
+        insert into public.students (id, name, cls, roll, section, guardian, phone, payable, paid)
+        values (sid, f_name || ' ' || l_name, cls_rec.name, r_num, sec_rec.section_name, g_pre || ' ' || g_first || ' ' || l_name, ph_num, 33500, paid_val)
+        on conflict (id) do nothing;
+      end loop;
+      s_idx := s_idx + 1;
+    end loop;
+  end loop;
+end $$;
 
 insert into public.student_costs (id, student_id, cost_type_id, name, amount, paid)
 select
@@ -675,11 +849,32 @@ cross join (
   where not c.is_custom
 ) ct
 where st.id like 's-%'
-on conflict (id) do update set
-  student_id = excluded.student_id,
-  cost_type_id = excluded.cost_type_id,
-  name = excluded.name,
-  amount = excluded.amount,
-  paid = excluded.paid,
-  updated_at = now();
+on conflict (id) do nothing;
+
+-- ============================================================
+-- লাইভ রিয়েলটাইম সিঙ্ক (Supabase Realtime Publication)
+-- ============================================================
+do $$
+declare
+  tbl text;
+  tbls text[] := array[
+    'school_settings', 'classes', 'class_sections', 'subjects', 'board_books',
+    'class_extra_activities', 'students', 'student_payment_history', 'school_media',
+    'teachers', 'notices', 'admissions', 'fees', 'attendance', 'results',
+    'books', 'book_loans', 'transport_routes', 'departments', 'employees',
+    'office_attendance', 'leaves', 'payroll', 'tasks', 'expenses',
+    'office_docs', 'cost_types', 'student_costs'
+  ];
+begin
+  foreach tbl in array tbls loop
+    if not exists (
+      select 1 from pg_publication_tables
+      where pubname = 'supabase_realtime'
+        and schemaname = 'public'
+        and tablename = tbl
+    ) then
+      execute format('alter publication supabase_realtime add table public.%I;', tbl);
+    end if;
+  end loop;
+end $$;
 
