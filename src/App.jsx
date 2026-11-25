@@ -1697,9 +1697,14 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
   const [bookForm, setBookForm] = useState(false);
   const [routeForm, setRouteForm] = useState(false);
   const [attClass, setAttClass] = useState("প্লে");
+  const [attManualSec, setAttManualSec] = useState("সব");
   const [attDate, setAttDate] = useState(todayStr());
   const [attDraft, setAttDraft] = useState(null);
   const [attMode, setAttMode] = useState("manual");
+  const [attSheetCls, setAttSheetCls] = useState("সব");
+  const [attSheetSec, setAttSheetSec] = useState("সব");
+  const [attSheetType, setAttSheetType] = useState("all");
+  const [attSheetQ, setAttSheetQ] = useState("");
   const [qrAutoScanPayload, setQrAutoScanPayload] = useState(null);
   const [historyStudentId, setHistoryStudentId] = useState(null);
   const [idCardStudentId, setIdCardStudentId] = useState(null);
@@ -1937,7 +1942,7 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
       const nextTimes = { ...(prev.attendanceTimes || {}), [dt + "|" + st.id]: scanTime };
       return { ...prev, attendance: nextAtt, attendanceTimes: nextTimes };
     });
-    toast(`${st.name} — হাজিরা নিশ্চিত হয়েছে (${bnDate(dt)})`);
+    toast(`${st.name} (রোল ${toBnNum(st.roll)}, ${st.cls} - ${st.section || "ক"}) — ছবিসহ হাজিরা শিটে জমা হয়েছে`);
     return { ok: true, student: st, date: dt, time: scanTime };
   };
 
@@ -2700,52 +2705,247 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
           </div>
         </div>}
 
-        {mod === "attendance" && <div>
-          <h1>দৈনিক হাজিরা ও QR হাজিরা ডিভাইস</h1><p className="lede">শ্রেণিভিত্তিক হাজিরা দিন অথবা শিক্ষার্থীর আইডি কার্ডের QR কোড স্ক্যান করে ছবিসহ উপস্থিতি নিন</p>
-          <div className="role-tabs" style={{ maxWidth: 480 }}>
-            <button type="button" className={attMode === "manual" ? "on" : ""} onClick={() => setAttMode("manual")}>✓ শ্রেণিভিত্তিক হাজিরা</button>
-            <button type="button" className={attMode === "qr" ? "on" : ""} onClick={() => setAttMode("qr")}>📷 হাজিরা ডিভাইস (QR স্ক্যানার)</button>
-          </div>
-          {attMode === "qr" ? (
-            <QrAttendanceDevice
-              data={data}
-              attDate={attDate}
-              setAttDate={setAttDate}
-              onScanCode={markQrAttendance}
-              autoPayload={qrAutoScanPayload}
-              clearAutoPayload={() => setQrAutoScanPayload(null)}
-              onOpenHistory={id => setHistoryStudentId(id)}
-              onOpenIdCard={id => setIdCardStudentId(id)}
-              toast={toast}
-            />
-          ) : (
-            <>
-              <div className="toolbar">
-                <select style={{ maxWidth: 170 }} value={attClass} onChange={e => setAttClass(e.target.value)}>{classOptionsOf(data).map(c => <option key={c}>{c}</option>)}</select>
-                <input type="date" style={{ maxWidth: 200 }} value={attDate} onChange={e => setAttDate(e.target.value)} />
-                <span className="sp"></span>
-                <button className="btn btn-brand" onClick={saveAtt} disabled={attStudents.length === 0}>হাজিরা সংরক্ষণ করুন</button>
+        {mod === "attendance" && (() => {
+          const stuById = new Map((data.students || []).map(s => [s.id, s]));
+          const allSheetRows = [];
+          Object.entries(data.attendance || {}).forEach(([k, map]) => {
+            const sep = k.indexOf("|");
+            if (sep <= 0 || !map) return;
+            const rowDate = k.slice(0, sep);
+            if (rowDate !== attDate) return;
+            Object.entries(map).forEach(([sid, status]) => {
+              const st = stuById.get(sid);
+              if (!st) return;
+              const scanTime = (data.attendanceTimes && data.attendanceTimes[attDate + "|" + sid]) || "";
+              allSheetRows.push({ student: st, status: status || "P", scanTime });
+            });
+          });
+          allSheetRows.sort((a, b) => {
+            if (Boolean(b.scanTime) !== Boolean(a.scanTime)) return b.scanTime ? 1 : -1;
+            const clsDiff = classOptionsOf(data).indexOf(a.student.cls) - classOptionsOf(data).indexOf(b.student.cls);
+            if (clsDiff !== 0) return clsDiff;
+            return (+a.student.roll || 0) - (+b.student.roll || 0);
+          });
+          const sheetSections = Array.from(new Set(allSheetRows.map(r => r.student.section).filter(Boolean)));
+          const sheetQ = attSheetQ.trim().toLowerCase();
+          const filteredSheetRows = allSheetRows.filter(r => {
+            if (attSheetCls !== "সব" && r.student.cls !== attSheetCls) return false;
+            if (attSheetSec !== "সব" && (r.student.section || "ক") !== attSheetSec) return false;
+            if (attSheetType === "qr" && !r.scanTime) return false;
+            if (sheetQ) {
+              const nm = (r.student.name || "").toLowerCase();
+              const rl = String(r.student.roll || "");
+              const bnRl = toBnNum(r.student.roll);
+              if (!nm.includes(sheetQ) && !rl.includes(sheetQ) && !bnRl.includes(sheetQ)) return false;
+            }
+            return true;
+          });
+          const qrCountAll = allSheetRows.filter(r => Boolean(r.scanTime)).length;
+          const presentCountAll = allSheetRows.filter(r => r.status === "P").length;
+          const absentCountAll = allSheetRows.length - presentCountAll;
+
+          const toggleSheetStatus = (st, curStatus) => {
+            const k = attDate + "|" + st.cls;
+            const nextStatus = curStatus === "P" ? "A" : "P";
+            setData(prev => {
+              const prevClassAtt = (prev.attendance && prev.attendance[k]) || {};
+              return { ...prev, attendance: { ...(prev.attendance || {}), [k]: { ...prevClassAtt, [st.id]: nextStatus } } };
+            });
+          };
+
+          const printAttendanceSheet = () => {
+            document.body.classList.add("printing-att-sheet");
+            setTimeout(() => {
+              window.print();
+              setTimeout(() => document.body.classList.remove("printing-att-sheet"), 400);
+            }, 60);
+          };
+
+          const exportAttendanceCsv = () => {
+            const esc = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
+            const header = ["ক্রমিক", "তারিখ", "নাম", "রোল নং", "শ্রেণি", "শাখা", "QR স্ক্যান সময়", "অবস্থা"];
+            const lines = [
+              header.map(esc).join(","),
+              ...filteredSheetRows.map((r, idx) => [
+                idx + 1,
+                attDate,
+                r.student.name,
+                r.student.roll,
+                r.student.cls,
+                r.student.section || "ক",
+                r.scanTime || "ম্যানুয়াল",
+                r.status === "P" ? "উপস্থিত" : "অনুপস্থিত",
+              ].map(esc).join(","))
+            ];
+            const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = `attendance-sheet-${attDate}.csv`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            toast("হাজিরা শিট CSV ডাউনলোড হচ্ছে");
+          };
+
+          const manualSections = Array.from(new Set(attStudents.map(s => s.section || "ক")));
+          const filteredManualStudents = attStudents
+            .filter(s => attManualSec === "সব" || (s.section || "ক") === attManualSec)
+            .slice()
+            .sort((a, b) => (+a.roll || 0) - (+b.roll || 0));
+
+          return <div>
+            <h1>দৈনিক হাজিরা ও QR হাজিরা ডিভাইস</h1><p className="lede">শ্রেণিভিত্তিক হাজিরা দিন অথবা শিক্ষার্থীর আইডি কার্ড স্ক্যান করে ছবি, নাম, রোল ও শাখাসহ হাজিরা শিটে জমা করুন</p>
+            <div className="role-tabs three" style={{ maxWidth: 660 }}>
+              <button type="button" className={attMode === "qr" ? "on" : ""} onClick={() => setAttMode("qr")}>📷 হাজিরা ডিভাইস (QR স্ক্যানার)</button>
+              <button type="button" className={attMode === "sheet" ? "on" : ""} onClick={() => setAttMode("sheet")}>📋 হাজিরা শিট ({toBnNum(allSheetRows.length)})</button>
+              <button type="button" className={attMode === "manual" ? "on" : ""} onClick={() => setAttMode("manual")}>✓ শ্রেণিভিত্তিক হাজিরা</button>
+            </div>
+            {attMode === "qr" ? (
+              <QrAttendanceDevice
+                data={data}
+                attDate={attDate}
+                setAttDate={setAttDate}
+                onScanCode={markQrAttendance}
+                autoPayload={qrAutoScanPayload}
+                clearAutoPayload={() => setQrAutoScanPayload(null)}
+                onOpenHistory={id => setHistoryStudentId(id)}
+                onOpenIdCard={id => setIdCardStudentId(id)}
+                onOpenSheet={() => setAttMode("sheet")}
+                toast={toast}
+              />
+            ) : attMode === "sheet" ? (
+              <div className="att-sheet-print-area">
+                <div className="card" style={{ marginBottom: 14 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+                    <div>
+                      <h2 style={{ margin: 0, fontSize: 19 }}>{S.name} — দৈনিক হাজিরা শিট</h2>
+                      <p style={{ margin: "2px 0 0", color: "var(--muted)", fontSize: 13.5 }}>তারিখ: <b>{bnDate(attDate)}</b> · আইডি স্ক্যানকৃত প্রতিটি শিক্ষার্থীর ছবি, নাম, রোল ও শাখা স্বয়ংক্রিয়ভাবে এখানে জমা হয়</p>
+                    </div>
+                    <div className="no-print" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <button type="button" className="btn btn-brand btn-sm" onClick={printAttendanceSheet} disabled={filteredSheetRows.length === 0}>🖨 হাজিরা শিট প্রিন্ট</button>
+                      <button type="button" className="btn btn-ghost btn-sm" onClick={exportAttendanceCsv} disabled={filteredSheetRows.length === 0}>⬇ CSV ডাউনলোড</button>
+                      <button type="button" className="btn btn-accent btn-sm" onClick={() => setAttMode("qr")}>📷 QR স্ক্যান করুন</button>
+                    </div>
+                  </div>
+                  <div className="hist-stats" style={{ marginBottom: 12 }}>
+                    <div className="hist-stat"><span>মোট হাজিরা রেকর্ড</span><b>{toBnNum(allSheetRows.length)}</b></div>
+                    <div className="hist-stat"><span>QR স্ক্যানকৃত</span><b style={{ color: "var(--brand)" }}>{toBnNum(qrCountAll)}</b></div>
+                    <div className="hist-stat"><span>উপস্থিত</span><b style={{ color: "var(--ok)" }}>{toBnNum(presentCountAll)}</b></div>
+                    <div className="hist-stat"><span>অনুপস্থিত</span><b style={{ color: "var(--danger)" }}>{toBnNum(absentCountAll)}</b></div>
+                  </div>
+                  <div className="toolbar no-print" style={{ marginBottom: 0 }}>
+                    <input type="date" style={{ maxWidth: 175 }} value={attDate} onChange={e => setAttDate(e.target.value)} />
+                    <select style={{ maxWidth: 150 }} value={attSheetCls} onChange={e => { setAttSheetCls(e.target.value); setAttSheetSec("সব"); }}>
+                      <option value="সব">সকল শ্রেণি</option>
+                      {classOptionsOf(data).map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                    <select style={{ maxWidth: 140 }} value={attSheetSec} onChange={e => setAttSheetSec(e.target.value)}>
+                      <option value="সব">সকল শাখা</option>
+                      {sheetSections.map(sec => <option key={sec} value={sec}>{sec}</option>)}
+                    </select>
+                    <select style={{ maxWidth: 175 }} value={attSheetType} onChange={e => setAttSheetType(e.target.value)}>
+                      <option value="all">সব হাজিরা রেকর্ড</option>
+                      <option value="qr">শুধু QR স্ক্যানকৃত</option>
+                    </select>
+                    <input type="search" placeholder="নাম বা রোল খুঁজুন…" value={attSheetQ} onChange={e => setAttSheetQ(e.target.value)} />
+                  </div>
+                </div>
+                {filteredSheetRows.length === 0 ? (
+                  <div className="card empty">
+                    <b>{bnDate(attDate)} তারিখে কোনো হাজিরা রেকর্ড পাওয়া যায়নি</b>
+                    "হাজিরা ডিভাইস (QR স্ক্যানার)" ট্যাব থেকে শিক্ষার্থীর আইডি কার্ড স্ক্যান করলে এখানে ছবি, নাম, রোল নং ও শাখাসহ জমা হবে।
+                  </div>
+                ) : (
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>#</th>
+                          <th>ছবি</th>
+                          <th>শিক্ষার্থীর নাম</th>
+                          <th>রোল নং</th>
+                          <th>শ্রেণি</th>
+                          <th>শাখা</th>
+                          <th>স্ক্যানের সময়</th>
+                          <th>অবস্থা</th>
+                          <th className="no-print">কার্যক্রম</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredSheetRows.map((r, idx) => (
+                          <tr key={r.student.id}>
+                            <td>{toBnNum(idx + 1)}</td>
+                            <td>
+                              {r.student.photo
+                                ? <img src={r.student.photo} alt={r.student.name} className="stu-ava-sm" style={{ width: 42, height: 42, borderRadius: 10 }} />
+                                : <span className="stu-ava-sm" style={{ width: 42, height: 42, borderRadius: 10 }}>{(r.student.name || "শ").trim().charAt(0)}</span>}
+                            </td>
+                            <td>
+                              <b>{r.student.name}</b>
+                              <div style={{ fontSize: "12px", color: "var(--muted)" }}>অভিভাবক: {r.student.guardian || "—"}</div>
+                            </td>
+                            <td><b>{toBnNum(r.student.roll)}</b></td>
+                            <td>{r.student.cls}</td>
+                            <td><span className="pill pill-info">{r.student.section || "ক"}</span></td>
+                            <td>
+                              {r.scanTime
+                                ? <span className="pill pill-ok">QR · {r.scanTime}</span>
+                                : <span className="pill pill-info">ম্যানুয়াল</span>}
+                            </td>
+                            <td>
+                              <button
+                                type="button"
+                                className={"att-toggle " + (r.status === "P" ? "p" : "a")}
+                                onClick={() => toggleSheetStatus(r.student, r.status)}
+                              >
+                                {r.status === "P" ? "✓ উপস্থিত" : "✗ অনুপস্থিত"}
+                              </button>
+                            </td>
+                            <td className="no-print">
+                              <div className="row-actions">
+                                <button type="button" className="mini-btn" onClick={() => setHistoryStudentId(r.student.id)}>হিস্টোরি</button>
+                                <button type="button" className="mini-btn" onClick={() => setIdCardStudentId(r.student.id)}>আইডি কার্ড</button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
-              {attStudents.length === 0
-                ? <div className="card empty"><b>এই শ্রেণিতে শিক্ষার্থী নেই</b>আগে শিক্ষার্থী মডিউল থেকে এই শ্রেণির শিক্ষার্থী যোগ করুন।</div>
-                : <div className="table-wrap"><table><thead><tr><th>রোল</th><th>নাম</th><th>শাখা</th><th>অবস্থা</th></tr></thead><tbody>
-                  {attStudents.slice().sort((a, b) => a.roll - b.roll).map(x => { const v = attMap[x.id] || "P"; const qrTm = data.attendanceTimes && data.attendanceTimes[attDate + "|" + x.id]; return (
-                    <tr key={x.id}><td>{toBnNum(x.roll)}</td>
-                    <td><div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      {x.photo ? <img src={x.photo} alt={x.name} className="stu-ava-sm" /> : <span className="stu-ava-sm">{(x.name || "শ").trim().charAt(0)}</span>}
-                      <div><b>{x.name}</b>{qrTm && <div style={{ fontSize: "11.5px", color: "var(--brand)" }}>QR স্ক্যান: {qrTm}</div>}</div>
-                    </div></td>
-                    <td>{x.section}</td>
-                    <td><button className={"att-toggle " + (v === "P" ? "p" : "a")} onClick={() => toggleAtt(x.id)}>{v === "P" ? "✓ উপস্থিত" : "✗ অনুপস্থিত"}</button></td></tr>); })}
-                  </tbody></table></div>}
-            </>
-          )}
-          <div className="card" style={{ marginTop: 16 }}><h3 style={{ marginTop: 0 }}>হাজিরার ইতিহাস</h3>
-            {attHistory.length === 0 && <p style={{ color: "var(--muted)", margin: 0 }}>এখনো কোনো হাজিরা সংরক্ষণ হয়নি।</p>}
-            {attHistory.map(k => { const [dt, cl] = k.split("|"); const m = data.attendance[k]; const p = Object.values(m).filter(v => v === "P").length;
-              return <div className="notice-item" key={k}><div><h3>{cl} শ্রেণি — {bnDate(dt)}</h3><p>উপস্থিত {p} জন · অনুপস্থিত {Object.keys(m).length - p} জন</p></div></div>; })}
-          </div>
-        </div>}
+            ) : (
+              <>
+                <div className="toolbar">
+                  <select style={{ maxWidth: 160 }} value={attClass} onChange={e => { setAttClass(e.target.value); setAttManualSec("সব"); }}>{classOptionsOf(data).map(c => <option key={c}>{c}</option>)}</select>
+                  <select style={{ maxWidth: 130 }} value={attManualSec} onChange={e => setAttManualSec(e.target.value)}>
+                    <option value="সব">সব শাখা</option>
+                    {manualSections.map(sec => <option key={sec} value={sec}>{sec}</option>)}
+                  </select>
+                  <input type="date" style={{ maxWidth: 185 }} value={attDate} onChange={e => setAttDate(e.target.value)} />
+                  <span className="sp"></span>
+                  <button className="btn btn-brand" onClick={saveAtt} disabled={attStudents.length === 0}>হাজিরা সংরক্ষণ করুন</button>
+                </div>
+                {filteredManualStudents.length === 0
+                  ? <div className="card empty"><b>এই শ্রেণি বা শাখায় শিক্ষার্থী নেই</b>আগে শিক্ষার্থী মডিউল থেকে শিক্ষার্থী যোগ করুন।</div>
+                  : <div className="table-wrap"><table><thead><tr><th>ছবি</th><th>রোল নং</th><th>শিক্ষার্থীর নাম</th><th>শাখা</th><th>অবস্থা</th></tr></thead><tbody>
+                    {filteredManualStudents.map(x => { const v = attMap[x.id] || "P"; const qrTm = data.attendanceTimes && data.attendanceTimes[attDate + "|" + x.id]; return (
+                      <tr key={x.id}>
+                      <td>{x.photo ? <img src={x.photo} alt={x.name} className="stu-ava-sm" /> : <span className="stu-ava-sm">{(x.name || "শ").trim().charAt(0)}</span>}</td>
+                      <td><b>{toBnNum(x.roll)}</b></td>
+                      <td><div><b>{x.name}</b>{qrTm && <div style={{ fontSize: "11.5px", color: "var(--brand)" }}>QR স্ক্যান: {qrTm}</div>}</div></td>
+                      <td>{x.section}</td>
+                      <td><button className={"att-toggle " + (v === "P" ? "p" : "a")} onClick={() => toggleAtt(x.id)}>{v === "P" ? "✓ উপস্থিত" : "✗ অনুপস্থিত"}</button></td></tr>); })}
+                    </tbody></table></div>}
+              </>
+            )}
+            <div className="card" style={{ marginTop: 16 }}><h3 style={{ marginTop: 0 }}>হাজিরার ইতিহাস</h3>
+              {attHistory.length === 0 && <p style={{ color: "var(--muted)", margin: 0 }}>এখনো কোনো হাজিরা সংরক্ষণ হয়নি।</p>}
+              {attHistory.map(k => { const [dt, cl] = k.split("|"); const m = data.attendance[k]; const p = Object.values(m).filter(v => v === "P").length;
+                return <div className="notice-item" key={k}><div><h3>{cl} শ্রেণি — {bnDate(dt)}</h3><p>উপস্থিত {toBnNum(p)} জন · অনুপস্থিত {toBnNum(Object.keys(m).length - p)} জন</p></div></div>; })}
+            </div>
+          </div>;
+        })()}
 
         {mod === "results" && <div>
           <h1>পরীক্ষা ও ফলাফল</h1><p className="lede">বিষয়ভিত্তিক নম্বর দিলে বাংলাদেশি পদ্ধতিতে GPA/গ্রেড অটো হিসাব হবে</p>
@@ -4102,10 +4302,11 @@ function StudentIdCardModal({ student, settings, onUpdateStudent, onUpdateSettin
   );
 }
 
-function QrAttendanceDevice({ data, attDate, setAttDate, onScanCode, autoPayload, clearAutoPayload, onOpenHistory, onOpenIdCard, toast }) {
+function QrAttendanceDevice({ data, attDate, setAttDate, onScanCode, autoPayload, clearAutoPayload, onOpenHistory, onOpenIdCard, onOpenSheet, toast }) {
   const [camActive, setCamActive] = useState(false);
   const [camError, setCamError] = useState("");
   const [manualCode, setManualCode] = useState("");
+  const [quickClass, setQuickClass] = useState(() => (classOptionsOf(data)[0] || "প্লে"));
   const [quickStudentId, setQuickStudentId] = useState("");
   const [lastResult, setLastResult] = useState(null);
   const [scanLogs, setScanLogs] = useState([]);
@@ -4113,6 +4314,34 @@ function QrAttendanceDevice({ data, attDate, setAttDate, onScanCode, autoPayload
   const streamRef = useRef(null);
   const rafRef = useRef(null);
   const lastScanCooldownRef = useRef({ code: "", ts: 0 });
+
+  const combinedLogs = useMemo(() => {
+    const stuById = new Map((data.students || []).map(s => [s.id, s]));
+    const persisted = [];
+    const seen = new Set();
+    for (const item of scanLogs) {
+      if (item && item.date === attDate && item.student && !seen.has(item.student.id)) {
+        seen.add(item.student.id);
+        persisted.push(item);
+      }
+    }
+    const times = data.attendanceTimes || {};
+    Object.entries(data.attendance || {}).forEach(([k, map]) => {
+      const sep = k.indexOf("|");
+      if (sep <= 0 || !map) return;
+      if (k.slice(0, sep) !== attDate) return;
+      Object.entries(map).forEach(([sid, status]) => {
+        if (status !== "P" || seen.has(sid)) return;
+        const tm = times[attDate + "|" + sid];
+        if (!tm) return;
+        const st = stuById.get(sid);
+        if (!st) return;
+        seen.add(sid);
+        persisted.push({ ok: true, student: st, date: attDate, time: tm });
+      });
+    });
+    return persisted;
+  }, [scanLogs, data.attendance, data.attendanceTimes, data.students, attDate]);
 
   const handleDecoded = raw => {
     const code = String(raw || "").trim();
@@ -4125,7 +4354,7 @@ function QrAttendanceDevice({ data, attDate, setAttDate, onScanCode, autoPayload
     const res = onScanCode(code, attDate);
     if (res && res.ok) {
       setLastResult(res);
-      setScanLogs(prev => [res, ...prev.filter(x => x.student.id !== res.student.id)].slice(0, 25));
+      setScanLogs(prev => [res, ...prev.filter(x => !(x.student.id === res.student.id && x.date === res.date))].slice(0, 50));
     } else {
       setLastResult({ ok: false, raw: code });
       toast("QR কোড থেকে কোনো শিক্ষার্থী খুঁজে পাওয়া যায়নি", true);
@@ -4264,13 +4493,20 @@ function QrAttendanceDevice({ data, attDate, setAttDate, onScanCode, autoPayload
         </form>
 
         <div style={{ marginTop: 12 }}>
-          <label>দ্রুত আইডি কার্ড QR পরীক্ষা (যেকোনো শিক্ষার্থী বাছুন)</label>
-          <div style={{ display: "flex", gap: 8 }}>
-            <select value={quickStudentId} onChange={e => setQuickStudentId(e.target.value)}>
+          <label>দ্রুত আইডি কার্ড QR পরীক্ষা (শ্রেণি ও শিক্ষার্থী বাছুন)</label>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <select style={{ maxWidth: 135 }} value={quickClass} onChange={e => { setQuickClass(e.target.value); setQuickStudentId(""); }}>
+              {classOptionsOf(data).map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <select style={{ flex: 1, minWidth: 170 }} value={quickStudentId} onChange={e => setQuickStudentId(e.target.value)}>
               <option value="">— শিক্ষার্থী বাছুন —</option>
-              {(data.students || []).slice(0, 120).map(s => (
-                <option key={s.id} value={s.id}>{s.name} — {s.cls} ({s.section}), রোল {toBnNum(s.roll)}</option>
-              ))}
+              {(data.students || [])
+                .filter(s => s.cls === quickClass)
+                .slice()
+                .sort((a, b) => (+a.roll || 0) - (+b.roll || 0))
+                .map(s => (
+                  <option key={s.id} value={s.id}>{s.name} — {s.section}, রোল {toBnNum(s.roll)}</option>
+                ))}
             </select>
             <button
               type="button"
@@ -4283,11 +4519,18 @@ function QrAttendanceDevice({ data, attDate, setAttDate, onScanCode, autoPayload
       </div>
 
       <div className="card">
-        <h3 style={{ margin: "0 0 10px" }}>স্ক্যানকৃত শিক্ষার্থীর ছবিসহ হাজিরা</h3>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+          <h3 style={{ margin: 0 }}>স্ক্যানকৃত শিক্ষার্থীর ছবিসহ হাজিরা</h3>
+          {onOpenSheet && (
+            <button type="button" className="btn btn-ghost btn-sm" onClick={onOpenSheet}>
+              📋 হাজিরা শিটে দেখুন ({toBnNum(combinedLogs.length)})
+            </button>
+          )}
+        </div>
         {!lastResult ? (
           <div className="empty">
             <b>এখনো কোনো কার্ড স্ক্যান হয়নি</b>
-            শিক্ষার্থীর আইডি কার্ডের অপর পৃষ্ঠার QR কোড স্ক্যান করলে এখানে তার ছবি ও হাজিরা দেখাবে।
+            শিক্ষার্থীর আইডি কার্ডের অপর পৃষ্ঠার QR কোড স্ক্যান করলে এখানে তার ছবি দেখাবে এবং নাম, রোল ও শাখাসহ হাজিরা শিটে জমা হবে।
           </div>
         ) : !lastResult.ok ? (
           <div className="note-box" style={{ background: "var(--danger-soft)", color: "var(--danger)" }}>
@@ -4301,7 +4544,7 @@ function QrAttendanceDevice({ data, attDate, setAttDate, onScanCode, autoPayload
                 : (lastResult.student.name || "শ").trim().charAt(0)}
             </div>
             <div style={{ flex: 1, minWidth: 190 }}>
-              <span className="pill pill-ok" style={{ marginBottom: 6 }}>✓ উপস্থিত — হাজিরা রেকর্ড হয়েছে</span>
+              <span className="pill pill-ok" style={{ marginBottom: 6 }}>✓ উপস্থিত — হাজিরা শিটে জমা হয়েছে</span>
               <h3 style={{ margin: "2px 0 4px", fontSize: 20, color: "var(--brand-dark)" }}>{lastResult.student.name}</h3>
               <div style={{ fontSize: 14, color: "var(--ink)" }}>
                 শ্রেণি: <b>{lastResult.student.cls}</b> · শাখা: <b>{lastResult.student.section}</b> · রোল: <b>{toBnNum(lastResult.student.roll)}</b>
@@ -4315,24 +4558,25 @@ function QrAttendanceDevice({ data, attDate, setAttDate, onScanCode, autoPayload
               <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
                 <button type="button" className="mini-btn" onClick={() => onOpenHistory(lastResult.student.id)}>সম্পূর্ণ হিস্টোরি</button>
                 <button type="button" className="mini-btn" onClick={() => onOpenIdCard(lastResult.student.id)}>আইডি কার্ড দেখুন</button>
+                {onOpenSheet && <button type="button" className="mini-btn" onClick={onOpenSheet}>হাজিরা শিট দেখুন</button>}
               </div>
             </div>
           </div>
         )}
 
-        <h4 style={{ margin: "16px 0 8px" }}>আজকের QR স্ক্যান তালিকা ({toBnNum(scanLogs.length)} জন)</h4>
-        {scanLogs.length === 0 ? (
-          <p style={{ color: "var(--muted)", fontSize: 13.5, margin: 0 }}>এই সেশনে এখনো কোনো QR স্ক্যান করা হয়নি।</p>
+        <h4 style={{ margin: "16px 0 8px" }}>হাজিরা শিটে জমা হওয়া QR স্ক্যান তালিকা ({toBnNum(combinedLogs.length)} জন)</h4>
+        {combinedLogs.length === 0 ? (
+          <p style={{ color: "var(--muted)", fontSize: 13.5, margin: 0 }}>{bnDate(attDate)} তারিখে এখনো কোনো QR স্ক্যান জমা হয়নি।</p>
         ) : (
           <div className="qr-log-list">
-            {scanLogs.map(item => (
+            {combinedLogs.map(item => (
               <div key={item.student.id} className="qr-log-item">
                 {item.student.photo
                   ? <img src={item.student.photo} alt={item.student.name} className="stu-ava-sm" />
                   : <span className="stu-ava-sm">{(item.student.name || "শ").trim().charAt(0)}</span>}
                 <div style={{ flex: 1 }}>
                   <b>{item.student.name}</b>
-                  <div style={{ fontSize: 12.5, color: "var(--muted)" }}>{item.student.cls} ({item.student.section}) · রোল {toBnNum(item.student.roll)}</div>
+                  <div style={{ fontSize: 12.5, color: "var(--muted)" }}>{item.student.cls} · শাখা: {item.student.section} · রোল {toBnNum(item.student.roll)}</div>
                 </div>
                 <span className="pill pill-ok">{item.time}</span>
               </div>

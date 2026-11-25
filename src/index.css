@@ -324,6 +324,11 @@ code.inline{font-family:var(--mono);background:var(--surface2);padding:1px 6px;b
   body.printing-history .hist-print-area,
   body.printing-history .hist-print-area *{visibility:visible}
   body.printing-history .hist-print-area{position:fixed;inset:0;padding:16px;background:#fff;color:#111;overflow:visible}
+  body.printing-att-sheet *{visibility:hidden}
+  body.printing-att-sheet .att-sheet-print-area,
+  body.printing-att-sheet .att-sheet-print-area *{visibility:visible}
+  body.printing-att-sheet .att-sheet-print-area{position:fixed;inset:0;padding:16px;background:#fff;color:#111;overflow:visible}
+  body.printing-att-sheet .no-print{display:none!important}
 }
 
 /* ---------- ফটো ও ভিডিও গ্যালারি ---------- */
