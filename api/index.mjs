@@ -340,7 +340,10 @@ async function loadPublicSnapshot() {
       boardBooksRes.rows,
       extraActsRes.rows
     );
-    const teacherMetaMap = await loadTeacherMetaMapFromSupabase(client);
+    const [teacherMetaMap, savedRoutine] = await Promise.all([
+      loadTeacherMetaMapFromSupabase(client),
+      loadRoutineFromSupabase(client)
+    ]);
     return {
       ok: true,
       configured: true,
@@ -385,6 +388,7 @@ async function loadPublicSnapshot() {
           isCustom: Boolean(r.is_custom)
         })),
         media: (mediaRes.data || []).map(mapMediaFromDb),
+        routine: savedRoutine,
         studentCount: stuClsRes.rows.length,
         classStudentCounts,
         issuedLoansCount: loansCountRes.count || 0
@@ -610,7 +614,7 @@ async function loadFullSnapshot(includeOfficeSensitive) {
           (r) => {
             const id = String(r.id || "");
             const cat = String(r.category || "");
-            return id !== "__master_auth_v1__" && cat !== "__system_auth__" && id !== "__teacher_profiles_v1__" && cat !== "__system_teacher_meta__";
+            return id !== "__master_auth_v1__" && cat !== "__system_auth__" && id !== "__teacher_profiles_v1__" && cat !== "__system_teacher_meta__" && id !== "__class_routine_v1__" && cat !== "__system_routine__";
           }
         ).map((r) => ({
           id: String(r.id || ""),
@@ -978,6 +982,10 @@ async function syncSlicesToSupabase(changes, removals, options) {
       );
       touchedTables.push("school_media");
     }
+    if (changes.routine && typeof changes.routine === "object") {
+      await saveRoutineToSupabase(client, changes.routine);
+      touchedTables.push("office_docs");
+    }
     if (changes.attendance && typeof changes.attendance === "object") {
       const attObj = changes.attendance;
       const timesObj = changes.attendanceTimes && typeof changes.attendanceTimes === "object" ? changes.attendanceTimes : {};
@@ -1180,7 +1188,7 @@ async function syncSlicesToSupabase(changes, removals, options) {
       if (Array.isArray(removals.officeDocs) && removals.officeDocs.length) {
         const safeIds = removals.officeDocs.filter((id) => {
           const s = String(id || "");
-          return s !== "__master_auth_v1__" && s !== "__teacher_profiles_v1__";
+          return s !== "__master_auth_v1__" && s !== "__teacher_profiles_v1__" && s !== "__class_routine_v1__";
         });
         if (safeIds.length) {
           await deleteIdsInChunks(client, "office_docs", safeIds);
@@ -1192,7 +1200,7 @@ async function syncSlicesToSupabase(changes, removals, options) {
           (r) => {
             const id = String(r.id || "");
             const cat = String(r.category || "");
-            return id !== "__master_auth_v1__" && cat !== "__system_auth__" && id !== "__teacher_profiles_v1__" && cat !== "__system_teacher_meta__";
+            return id !== "__master_auth_v1__" && cat !== "__system_auth__" && id !== "__teacher_profiles_v1__" && cat !== "__system_teacher_meta__" && id !== "__class_routine_v1__" && cat !== "__system_routine__";
           }
         );
         await upsertInChunks(
@@ -1514,6 +1522,31 @@ async function loadTeacherMetaMapFromSupabase(client) {
     return {};
   }
 }
+async function loadRoutineFromSupabase(client) {
+  try {
+    const { data, error } = await client.from("office_docs").select("id, category, note").eq("id", "__class_routine_v1__").maybeSingle();
+    if (error || !data) return null;
+    if (String(data.category || "") !== "__system_routine__") return null;
+    const parsed = JSON.parse(String(data.note || "null"));
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+async function saveRoutineToSupabase(client, routineObj) {
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  await client.from("office_docs").upsert(
+    {
+      id: "__class_routine_v1__",
+      title: "Class Routine Master Data",
+      category: "__system_routine__",
+      doc_date: now.slice(0, 10),
+      note: JSON.stringify(routineObj),
+      updated_at: now
+    },
+    { onConflict: "id" }
+  );
+}
 async function saveTeacherMetaToSupabase(client, recs, removedIds) {
   try {
     const cur = await loadTeacherMetaMapFromSupabase(client);
@@ -1535,6 +1568,7 @@ async function saveTeacherMetaToSupabase(client, recs, removedIds) {
         teachingClasses: Array.isArray(r.teachingClasses) ? r.teachingClasses : [],
         teachingAssignments: Array.isArray(r.teachingAssignments) ? r.teachingAssignments : [],
         salaryHistory: Array.isArray(r.salaryHistory) ? r.salaryHistory : [],
+        additionalSubjects: Array.isArray(r.additionalSubjects) ? r.additionalSubjects : [],
         subjects: Array.isArray(r.subjects) ? r.subjects : [],
         email: String(r.email || ""),
         bloodGroup: String(r.bloodGroup || ""),
@@ -1566,6 +1600,7 @@ function mergeTeacherRow(r, meta, includeSalary) {
     name: String(r.name || ""),
     teacherCode: String(r.teacher_code || m.teacherCode || ""),
     subject: String(r.subject || ""),
+    additionalSubjects: Array.isArray(m.additionalSubjects) ? m.additionalSubjects : Array.isArray(r.additional_subjects) ? r.additional_subjects : [],
     subjects: Array.isArray(m.subjects) ? m.subjects : [],
     designation: String(r.designation || m.designation || ""),
     phone: String(r.phone || ""),

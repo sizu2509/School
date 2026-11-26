@@ -432,7 +432,10 @@ export async function loadPublicSnapshot() {
       extraActsRes.rows
     );
 
-    const teacherMetaMap = await loadTeacherMetaMapFromSupabase(client);
+    const [teacherMetaMap, savedRoutine] = await Promise.all([
+      loadTeacherMetaMapFromSupabase(client),
+      loadRoutineFromSupabase(client),
+    ]);
 
     return {
       ok: true,
@@ -480,6 +483,7 @@ export async function loadPublicSnapshot() {
           isCustom: Boolean(r.is_custom),
         })),
         media: ((mediaRes.data || []) as Record<string, unknown>[]).map(mapMediaFromDb),
+        routine: savedRoutine,
         studentCount: stuClsRes.rows.length,
         classStudentCounts,
         issuedLoansCount: loansCountRes.count || 0,
@@ -753,7 +757,9 @@ export async function loadFullSnapshot(includeOfficeSensitive: boolean) {
                 id !== "__master_auth_v1__" &&
                 cat !== "__system_auth__" &&
                 id !== "__teacher_profiles_v1__" &&
-                cat !== "__system_teacher_meta__"
+                cat !== "__system_teacher_meta__" &&
+                id !== "__class_routine_v1__" &&
+                cat !== "__system_routine__"
               );
             }
           )
@@ -1163,6 +1169,12 @@ export async function syncSlicesToSupabase(
       touchedTables.push("school_media");
     }
 
+    // ৯.৫ মাস্টার ক্লাস রুটিন
+    if (changes.routine && typeof changes.routine === "object") {
+      await saveRoutineToSupabase(client, changes.routine as Record<string, unknown>);
+      touchedTables.push("office_docs");
+    }
+
     // ১০. হাজিরা ও ফলাফল
     if (changes.attendance && typeof changes.attendance === "object") {
       const attObj = changes.attendance as Record<string, Record<string, string>>;
@@ -1379,7 +1391,7 @@ export async function syncSlicesToSupabase(
       if (Array.isArray(removals.officeDocs) && removals.officeDocs.length) {
         const safeIds = removals.officeDocs.filter((id) => {
           const s = String(id || "");
-          return s !== "__master_auth_v1__" && s !== "__teacher_profiles_v1__";
+          return s !== "__master_auth_v1__" && s !== "__teacher_profiles_v1__" && s !== "__class_routine_v1__";
         });
         if (safeIds.length) {
           await deleteIdsInChunks(client, "office_docs", safeIds);
@@ -1395,7 +1407,9 @@ export async function syncSlicesToSupabase(
               id !== "__master_auth_v1__" &&
               cat !== "__system_auth__" &&
               id !== "__teacher_profiles_v1__" &&
-              cat !== "__system_teacher_meta__"
+              cat !== "__system_teacher_meta__" &&
+              id !== "__class_routine_v1__" &&
+              cat !== "__system_routine__"
             );
           }
         );
@@ -1813,6 +1827,44 @@ async function loadTeacherMetaMapFromSupabase(
   }
 }
 
+async function loadRoutineFromSupabase(
+  client: SupabaseClient
+): Promise<Record<string, unknown> | null> {
+  try {
+    const { data, error } = await client
+      .from("office_docs")
+      .select("id, category, note")
+      .eq("id", "__class_routine_v1__")
+      .maybeSingle();
+    if (error || !data) return null;
+    if (String(data.category || "") !== "__system_routine__") return null;
+    const parsed = JSON.parse(String(data.note || "null"));
+    return parsed && typeof parsed === "object"
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function saveRoutineToSupabase(
+  client: SupabaseClient,
+  routineObj: Record<string, unknown>
+): Promise<void> {
+  const now = new Date().toISOString();
+  await client.from("office_docs").upsert(
+    {
+      id: "__class_routine_v1__",
+      title: "Class Routine Master Data",
+      category: "__system_routine__",
+      doc_date: now.slice(0, 10),
+      note: JSON.stringify(routineObj),
+      updated_at: now,
+    },
+    { onConflict: "id" }
+  );
+}
+
 async function saveTeacherMetaToSupabase(
   client: SupabaseClient,
   recs: Record<string, unknown>[],
@@ -1838,6 +1890,7 @@ async function saveTeacherMetaToSupabase(
         teachingClasses: Array.isArray(r.teachingClasses) ? r.teachingClasses : [],
         teachingAssignments: Array.isArray(r.teachingAssignments) ? r.teachingAssignments : [],
         salaryHistory: Array.isArray(r.salaryHistory) ? r.salaryHistory : [],
+        additionalSubjects: Array.isArray(r.additionalSubjects) ? r.additionalSubjects : [],
         subjects: Array.isArray(r.subjects) ? r.subjects : [],
         email: String(r.email || ""),
         bloodGroup: String(r.bloodGroup || ""),
@@ -1885,6 +1938,11 @@ function mergeTeacherRow(
     name: String(r.name || ""),
     teacherCode: String(r.teacher_code || m.teacherCode || ""),
     subject: String(r.subject || ""),
+    additionalSubjects: Array.isArray(m.additionalSubjects)
+      ? m.additionalSubjects
+      : Array.isArray(r.additional_subjects)
+      ? r.additional_subjects
+      : [],
     subjects: Array.isArray(m.subjects) ? m.subjects : [],
     designation: String(r.designation || m.designation || ""),
     phone: String(r.phone || ""),

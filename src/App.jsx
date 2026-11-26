@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import QRCode from "qrcode";
 import jsQR from "jsqr";
+import RoutineModule from "./RoutineModule.jsx";
+import { createDefaultRoutineData, normalizeRoutineState } from "./routineUtils.js";
 import "./index.css";
 
 /* ছবি: এই ফাইলগুলো প্রজেক্টের public/assets/ ফোল্ডারে রাখুন
@@ -1038,6 +1040,16 @@ function collectSchoolCoreSubjects(data) {
   Object.values(DEFAULT_BOARD_BOOKS).flat().forEach(b => push(b.title));
   DEFAULT_EXTRA_ACTIVITIES.forEach(a => push(a));
   ((data && data.subjects) || []).forEach(s => push(s && s.name));
+  ((data && data.classes) || []).forEach(c => {
+    normalizeClassSections(c).forEach(sec => {
+      if (Array.isArray(sec.subjects)) sec.subjects.forEach(sb => push(sb && sb.name));
+    });
+  });
+  ((data && data.teachers) || []).forEach(t => {
+    if (!t) return;
+    push(t.subject);
+    if (Array.isArray(t.additionalSubjects)) t.additionalSubjects.forEach(push);
+  });
   return out;
 }
 
@@ -1245,6 +1257,9 @@ function defaultStudentsData(costTypes, classes) {
 function emptyData() {
   const costTypes = defaultCostTypes();
   const { students, studentCosts } = defaultStudentsData(costTypes);
+  const classes = defaultClasses();
+  const teachers = defaultSubjectTeachers(false);
+  const subjects = defaultBoardSubjects();
   return {
     settings: {
       name: "আমার স্কুল", motto: "জ্ঞানেই আলো, চরিত্রেই শক্তি", established: "",
@@ -1253,7 +1268,8 @@ function emptyData() {
       principalMsg: "শিক্ষাই জাতির মেরুদণ্ড। আমাদের লক্ষ্য প্রতিটি শিক্ষার্থীকে জ্ঞান, চরিত্র ও মানবিক মূল্যবোধে গড়ে তোলা — যাতে তারা আগামীর বাংলাদেশ গড়ার কারিগর হতে পারে।",
       fb: "", yt: "", ig: ""
     },
-    students, teachers: defaultSubjectTeachers(false), classes: defaultClasses(), subjects: defaultBoardSubjects(),
+    students, teachers, classes, subjects,
+    routine: createDefaultRoutineData(classes, teachers, subjects),
     notices: [], admissions: [], attendance: {}, attendanceTimes: {}, results: {},
     books: [], loans: [], routes: [],
     employees: [], departments: [], officeAttendance: {}, leaves: [], payroll: [], tasks: [], expenses: [], officeDocs: [],
@@ -1274,6 +1290,7 @@ function sampleData() {
   d.classes = defaultClasses();
   d.subjects = defaultBoardSubjects();
   d.teachers = defaultSubjectTeachers(true);
+  d.routine = createDefaultRoutineData(d.classes, d.teachers, d.subjects);
   d.costTypes = defaultCostTypes();
   const seeded = defaultStudentsData(d.costTypes);
   d.students = seeded.students;
@@ -2228,6 +2245,63 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
     setEmpForm(false); setEditEmp(null);
   };
   const patch = p => setData(prev => ({ ...prev, ...p }));
+  const allSchoolSubjectNames = useMemo(() => collectSchoolCoreSubjects(data), [data.subjects, data.classes, data.teachers]);
+  const assignClassTeacherSlot = (teacherId, clsName, secName) => {
+    const cleanSec = secName || "ক";
+    let assignedName = "";
+    setData(prev => {
+      const normalizedList = (prev.teachers || []).map(t => normalizeTeacherRecord(t, true));
+      const found = teacherId ? normalizedList.find(t => t.id === teacherId) : null;
+      if (found) assignedName = found.name;
+      const nextTeachers = normalizedList.map(t => {
+        if (teacherId && t.id === teacherId) {
+          const nextTeachCls = (t.teachingClasses || []).includes(clsName)
+            ? t.teachingClasses
+            : [...(t.teachingClasses || []), clsName];
+          return {
+            ...t,
+            classTeacherClass: clsName,
+            classTeacherSection: cleanSec,
+            teachingClasses: nextTeachCls
+          };
+        }
+        if (t.classTeacherClass === clsName && (t.classTeacherSection || "ক") === cleanSec) {
+          return { ...t, classTeacherClass: "", classTeacherSection: "" };
+        }
+        return t;
+      });
+      return { ...prev, teachers: nextTeachers };
+    });
+    if (teacherId) {
+      const matchedT = (data.teachers || []).find(t => t.id === teacherId);
+      const tName = assignedName || (matchedT && matchedT.name) || "শিক্ষক";
+      toast(`${tName}-কে ${clsName} (${cleanSec}) শ্রেণি শিক্ষক নির্বাচন করা হয়েছে`);
+    } else {
+      toast(`${clsName} (${cleanSec}) শাখার শ্রেণি শিক্ষক দায়িত্ব সরানো হয়েছে`);
+    }
+  };
+  const assignSubjectToTeacher = (teacherId, subjectName) => {
+    const cleanSub = String(subjectName || "").trim();
+    if (!teacherId || !cleanSub) return;
+    const curTeacher = (data.teachers || []).find(t => t.id === teacherId);
+    const targetName = (curTeacher && curTeacher.name) || "শিক্ষক";
+    const curExtra = curTeacher && Array.isArray(curTeacher.additionalSubjects) ? curTeacher.additionalSubjects : [];
+    if (curTeacher && (curTeacher.subject === cleanSub || curExtra.includes(cleanSub))) {
+      toast(`${targetName} ইতিমধ্যেই "${cleanSub}" বিষয়ে যুক্ত আছেন`);
+      return;
+    }
+    setData(prev => ({
+      ...prev,
+      teachers: (prev.teachers || []).map(t => {
+        if (t.id !== teacherId) return t;
+        const norm = normalizeTeacherRecord(t, true);
+        const existing = Array.isArray(norm.additionalSubjects) ? norm.additionalSubjects : [];
+        if (norm.subject === cleanSub || existing.includes(cleanSub)) return norm;
+        return { ...norm, additionalSubjects: [...existing, cleanSub] };
+      })
+    }));
+    toast(`${targetName}-এর পাঠদান বিষয়ে "${cleanSub}" যুক্ত হয়েছে`);
+  };
 
   /* ----- শিক্ষার্থীর বার্ষিক খরচ ----- */
   const costTypes = costTypesOf(data);
@@ -2691,14 +2765,14 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
 
         {mod === "teachers" && (() => {
           const allTeachers = (data.teachers || []).map(t => normalizeTeacherRecord(t, true));
-          const coreSubjects = collectSchoolCoreSubjects(data);
+          const coreSubjects = allSchoolSubjectNames;
           const uncoveredSubjects = coreSubjects.filter(sub => !allTeachers.some(t => teacherCoversSubject(t, sub)));
           const missingDefaultSeeds = DEFAULT_TEACHERS_SEED.filter(s => !allTeachers.some(t => t.id === s.id || (t.subject || "").trim() === s.subject.trim()));
-          const tSubOptions = Array.from(new Set(allTeachers.map(t => t.subject).filter(Boolean)));
+          const tSubOptions = Array.from(new Set(allTeachers.flatMap(t => [t.subject, ...(t.additionalSubjects || [])]).filter(Boolean)));
           const tClassOptions = classOptionsOf(data);
           const q = teacherSearch.trim().toLowerCase();
           const filteredTeachers = allTeachers.filter(t => {
-            if (teacherSubFilter !== "সব" && t.subject !== teacherSubFilter) return false;
+            if (teacherSubFilter !== "সব" && t.subject !== teacherSubFilter && !(t.additionalSubjects || []).includes(teacherSubFilter)) return false;
             if (teacherClassFilter !== "সব" && !(t.teachingClasses || []).includes(teacherClassFilter) && t.classTeacherClass !== teacherClassFilter) return false;
             if (q) {
               const hay = [t.name, t.teacherCode, t.designation, t.subject, ...(t.additionalSubjects || []), t.classTeacherClass, t.phone, t.qualification].filter(Boolean).join(" ").toLowerCase();
@@ -2728,7 +2802,7 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
           };
           return <div>
             <h1>বিষয়ভিত্তিক শিক্ষক, প্রোফাইল ও আইডি কার্ড</h1>
-            <p className="lede">প্রতিটি বিষয়ের শিক্ষক তালিকা · প্রোফাইলে ক্লিক করলে যোগদানের তারিখ, কর্মজীবনের মোট বেতন-ভাতার হিস্টোরি, শ্রেণি শিক্ষক ও ক্লাস তথ্য দেখা যাবে</p>
+            <p className="lede">প্রতিটি বিষয়ের শিক্ষক তালিকা · প্রোফাইলে ক্লিক করলে যোগদানের তারিখ, কর্মজীবনের বেতন-ভাতার হিস্টোরি, শ্রেণি শিক্ষক ও অন্যান্য পাঠদান বিষয় নির্বাচন করা যাবে</p>
 
             <div className="kpis">
               <div className="kpi"><b>{toBnNum(allTeachers.length)}</b><span>মোট শিক্ষক</span></div>
@@ -2783,6 +2857,7 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
               : <div className="grid3">
                   {filteredTeachers.map(t => {
                     const careerTotal = (t.salaryHistory || []).reduce((acc, r) => acc + (+r.basic || 0) + (+r.allowance || 0) + (+r.bonus || 0) - (+r.deduction || 0), 0);
+                    const extraSubs = (t.additionalSubjects || []).filter(s => s && s !== t.subject);
                     return (
                       <div
                         className="card teacher-grid-card"
@@ -2800,8 +2875,14 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
                               : <div className="stu-ava" style={{ borderRadius: "50%" }}>{t.name.trim().charAt(0)}</div>}
                             <div style={{ minWidth: 0 }}>
                               <div style={{ fontSize: "12px", color: "var(--muted)", fontWeight: 600 }}>{t.teacherCode} · {t.designation}</div>
-                              <h3 style={{ margin: "1px 0 2px", fontSize: 17 }}>{t.name}</h3>
-                              <span className="sub-badge">{t.subject}</span>
+                              <h3 style={{ margin: "1px 0 3px", fontSize: 17 }}>{t.name}</h3>
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                                <span className="sub-badge">{t.subject}</span>
+                                {extraSubs.slice(0, 2).map(es => (
+                                  <span key={es} className="sub-badge warn">{es}</span>
+                                ))}
+                                {extraSubs.length > 2 && <span className="sub-badge warn">+{toBnNum(extraSubs.length - 2)} আরও</span>}
+                              </div>
                             </div>
                           </div>
                           <div style={{ fontSize: "13.5px", color: "var(--ink2)", display: "grid", gap: 3 }}>
@@ -2904,6 +2985,8 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
                               ? actSubs
                               : secSubs;
                           const defaultSecGrp = isStream && inferStreamForSection(sec.name) ? inferStreamForSection(sec.name) : (isStream ? "আবশ্যিক" : "সাধারণ");
+                          const normalizedSecTeachers = (data.teachers || []).map(t => normalizeTeacherRecord(t, true));
+                          const secClassTeacher = normalizedSecTeachers.find(t => t.classTeacherClass === c.name && (t.classTeacherSection || "ক") === sec.name);
                           const toggleExpand = () => {
                             setOpenSecKey(prev => prev === secKey ? null : secKey);
                             setSecSubFilter("সব");
@@ -2953,7 +3036,25 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
                                     {isExpanded ? "▾ " : "▸ "}যুক্ত বিষয় ({toBnNum(secSubs.length)})
                                   </button>
                                 </span>
-                                <span style={{ display: "flex", gap: 4 }} onClick={e => e.stopPropagation()}>
+                                <span style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }} onClick={e => e.stopPropagation()}>
+                                  <span className="sec-ct-wrap">
+                                    <span style={{ fontSize: "12px", fontWeight: 700, color: secClassTeacher ? "var(--brand-dark)" : "var(--muted)" }}>
+                                      শ্রেণি শিক্ষক:
+                                    </span>
+                                    <select
+                                      className="sec-ct-select"
+                                      aria-label={`${c.name} ${sec.name} শাখার শ্রেণি শিক্ষক নির্বাচন`}
+                                      value={secClassTeacher ? secClassTeacher.id : ""}
+                                      onChange={e => assignClassTeacherSlot(e.target.value, c.name, sec.name)}
+                                    >
+                                      <option value="">— শ্রেণি শিক্ষক নির্বাচন করুন —</option>
+                                      {normalizedSecTeachers.map(t => (
+                                        <option key={t.id} value={t.id}>
+                                          {t.name} ({t.subject})
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </span>
                                   <button type="button" className="mini-btn" onClick={() => setSectionModal({ clsId: c.id, idx, initial: sec })}>সম্পাদনা</button>
                                   <button type="button" className="mini-btn red" onClick={() => deleteSectionAt(idx)}>মুছুন</button>
                                 </span>
@@ -3138,23 +3239,44 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
                                           </form>
                                         );
                                       }
+                                      const matchedTeachers = normalizedSecTeachers.filter(t => teacherCoversSubject(t, sub.name));
                                       return (
                                         <div
                                           key={sub.id || vIdx}
                                           style={{
                                             display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap",
-                                            padding: "5px 8px", borderRadius: 6,
+                                            padding: "6px 8px", borderRadius: 6,
                                             background: sub.group === "এক্সট্রা অ্যাকটিভিটিস" ? "var(--accent-soft)" : "var(--surface2)",
                                             fontSize: "13px"
                                           }}
                                         >
-                                          <span>
-                                            <b>{sub.name}</b>
-                                            {sub.code ? <span style={{ color: "var(--muted)" }}> · কোড: {sub.code}</span> : null}
-                                            {sub.group ? <span style={{ color: sub.group === "এক্সট্রা অ্যাকটিভিটিস" ? "var(--accent)" : "var(--brand)", fontWeight: 600 }}> · {sub.group}</span> : null}
-                                            {sub.sectionOnly ? <span style={{ fontSize: "11px", marginLeft: 5, padding: "1px 5px", borderRadius: 4, background: "var(--brand-soft)", color: "var(--brand-dark)", fontWeight: 600 }}>শাখা: {sec.name}</span> : null}
-                                          </span>
-                                          <span style={{ display: "flex", gap: 4 }}>
+                                          <div style={{ display: "grid", gap: 2 }}>
+                                            <span>
+                                              <b>{sub.name}</b>
+                                              {sub.code ? <span style={{ color: "var(--muted)" }}> · কোড: {sub.code}</span> : null}
+                                              {sub.group ? <span style={{ color: sub.group === "এক্সট্রা অ্যাকটিভিটিস" ? "var(--accent)" : "var(--brand)", fontWeight: 600 }}> · {sub.group}</span> : null}
+                                              {sub.sectionOnly ? <span style={{ fontSize: "11px", marginLeft: 5, padding: "1px 5px", borderRadius: 4, background: "var(--brand-soft)", color: "var(--brand-dark)", fontWeight: 600 }}>শাখা: {sec.name}</span> : null}
+                                            </span>
+                                            <span style={{ fontSize: "11.5px", color: matchedTeachers.length ? "var(--brand-dark)" : "var(--muted)" }}>
+                                              <b>শিক্ষক:</b> {matchedTeachers.length ? matchedTeachers.map(t => t.name).join(", ") : "নির্ধারিত নয়"}
+                                            </span>
+                                          </div>
+                                          <span style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
+                                            <select
+                                              className="sec-ct-select"
+                                              aria-label={`${sub.name} বিষয়ে শিক্ষক যুক্ত করুন`}
+                                              value=""
+                                              onChange={e => {
+                                                if (e.target.value) assignSubjectToTeacher(e.target.value, sub.name);
+                                              }}
+                                            >
+                                              <option value="">+ শিক্ষককে এই বিষয় দিন…</option>
+                                              {normalizedSecTeachers.map(t => (
+                                                <option key={t.id} value={t.id}>
+                                                  {t.name} ({t.subject})
+                                                </option>
+                                              ))}
+                                            </select>
                                             <button
                                               type="button"
                                               className="mini-btn"
@@ -3600,17 +3722,30 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
           </div>
         </div>}
 
-        {mod === "routine" && <div>
-          <h1>ক্লাস রুটিন</h1><p className="lede">সাপ্তাহিক রুটিন (নমুনা কাঠামো — বিষয় অনুযায়ী সাজানো)</p>
-          <div className="table-wrap"><table>
-            <thead><tr><th>দিন</th><th>১ম পিরিয়ড<br />৯:০০–৯:৫০</th><th>২য় পিরিয়ড<br />৯:৫০–১০:৪০</th><th>৩য় পিরিয়ড<br />১০:৫৫–১১:৪৫</th><th>৪র্থ পিরিয়ড<br />১১:৪৫–১২:৩৫</th><th>৫ম পিরিয়ড<br />১:৩০–২:২০</th></tr></thead>
-            <tbody>
-              {[["রবিবার", 0], ["সোমবার", 1], ["মঙ্গলবার", 2], ["বুধবার", 3], ["বৃহস্পতিবার", 4]].map(([day, off]) => (
-                <tr key={day}><td><b>{day}</b></td>{[0, 1, 2, 3, 4].map(i => <td key={i}>{SUBJECTS[(i + off) % SUBJECTS.length]}</td>)}</tr>
-              ))}
-            </tbody></table></div>
-          <div className="note-box">এই রুটিনটি বিষয় তালিকা থেকে সাজানো একটি কাঠামো। শ্রেণিভেদে আলাদা রুটিন লাগলে শিক্ষক/শ্রেণি অনুযায়ী এন্ট্রি যোগ করা যাবে।</div>
-        </div>}
+        {mod === "routine" && (
+          <RoutineModule
+            data={data}
+            setData={setData}
+            isStudent={isStudent}
+            settings={S}
+            allSchoolSubjectNames={allSchoolSubjectNames}
+            normalizeClassSections={normalizeClassSections}
+            normalizeSectionSubjects={normalizeSectionSubjects}
+            normalizeTeacherRecord={normalizeTeacherRecord}
+            teacherCoversSubject={teacherCoversSubject}
+            onAssignClassTeacher={assignClassTeacherSlot}
+            onNewTeacher={() => { setEditTeacher(null); setTeacherPresetSubject(""); setTeacherForm(true); }}
+            onEditTeacher={t => { setEditTeacher(t); setTeacherPresetSubject(""); setTeacherForm(true); }}
+            onOpenTeacherProfile={tid => setProfileTeacherId(tid)}
+            onDeleteTeacher={tid => {
+              const next = (data.teachers || []).filter(x => x.id !== tid);
+              if (next.length === 0 && onTeachersCleared) onTeachersCleared();
+              patch({ teachers: next });
+              toast("শিক্ষকের তথ্য মুছে ফেলা হয়েছে");
+            }}
+            toast={toast}
+          />
+        )}
 
         {mod === "library" && <div>
           <h1>লাইব্রেরি</h1><p className="lede">বই {data.books.length} শিরোনাম · ধার দেওয়া আছে {issuedLoans.length}টি</p>
@@ -4013,18 +4148,26 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
         initial={editTeacher}
         presetSubject={teacherPresetSubject}
         classes={data.classes}
-        allSubjectNames={collectSchoolCoreSubjects(data)}
+        allTeachers={(data.teachers || []).map(t => normalizeTeacherRecord(t, true))}
+        allSubjectNames={allSchoolSubjectNames}
         close={() => { setTeacherForm(false); setEditTeacher(null); setTeacherPresetSubject(""); }}
         onPhoto={onPhoto}
         photoErr={photoErr}
         save={rec => {
-          if (editTeacher) {
-            patch({ teachers: data.teachers.map(x => x.id === editTeacher.id ? { ...rec, id: editTeacher.id } : x) });
-            toast("শিক্ষকের তথ্য আপডেট হয়েছে");
-          } else {
-            patch({ teachers: [...data.teachers, { ...rec, id: uid() }] });
-            toast("নতুন শিক্ষক ও প্রোফাইল যোগ হয়েছে");
-          }
+          const targetId = editTeacher ? editTeacher.id : uid();
+          const savedRec = { ...rec, id: targetId };
+          const ctCls = savedRec.classTeacherClass || "";
+          const ctSec = savedRec.classTeacherSection || "ক";
+          const baseList = editTeacher
+            ? data.teachers.map(x => x.id === editTeacher.id ? savedRec : normalizeTeacherRecord(x, true))
+            : [...data.teachers.map(x => normalizeTeacherRecord(x, true)), savedRec];
+          const syncedList = ctCls
+            ? baseList.map(x => (x.id !== targetId && x.classTeacherClass === ctCls && (x.classTeacherSection || "ক") === ctSec)
+                ? { ...x, classTeacherClass: "", classTeacherSection: "" }
+                : x)
+            : baseList;
+          patch({ teachers: syncedList });
+          toast(editTeacher ? "শিক্ষকের তথ্য আপডেট হয়েছে" : "নতুন শিক্ষক ও প্রোফাইল যোগ হয়েছে");
           setTeacherForm(false); setEditTeacher(null); setTeacherPresetSubject("");
         }}
       />}
@@ -4036,7 +4179,14 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
           <TeacherProfileModal
             teacher={tch}
             settings={S}
-            onUpdateTeacher={upd => patch({ teachers: data.teachers.map(x => x.id === tch.id ? { ...normalizeTeacherRecord(x, true), ...upd } : x) })}
+            classes={data.classes}
+            allTeachers={(data.teachers || []).map(t => normalizeTeacherRecord(t, true))}
+            allSubjectNames={allSchoolSubjectNames}
+            onAssignClassTeacher={assignClassTeacherSlot}
+            onUpdateTeacher={upd => setData(prev => ({
+              ...prev,
+              teachers: (prev.teachers || []).map(x => x.id === tch.id ? { ...normalizeTeacherRecord(x, true), ...upd } : x)
+            }))}
             onEdit={() => { setProfileTeacherId(null); setEditTeacher(tch); setTeacherPresetSubject(""); setTeacherForm(true); }}
             onOpenIdCard={() => { setProfileTeacherId(null); setIdCardTeacherId(tch.id); }}
             close={() => setProfileTeacherId(null)}
@@ -4566,7 +4716,7 @@ function SubjectForm({ initial, classes, classList, defaultClass, defaultSection
     </ModalForm>
   );
 }
-function TeacherForm({ initial, presetSubject, classes, allSubjectNames, close, save, onPhoto, photoErr }) {
+function TeacherForm({ initial, presetSubject, classes, allTeachers, allSubjectNames, close, save, onPhoto, photoErr }) {
   const classOpts = useMemo(() => {
     const names = (classes || []).map(c => c.name).filter(Boolean);
     return names.length ? names : CLASS_NAMES;
@@ -4576,7 +4726,7 @@ function TeacherForm({ initial, presetSubject, classes, allSubjectNames, close, 
       const n = normalizeTeacherRecord(initial, true);
       return {
         ...n,
-        additionalSubjectsText: (n.additionalSubjects || []).join(", "),
+        additionalSubjects: Array.isArray(n.additionalSubjects) ? n.additionalSubjects.filter(Boolean) : [],
         teachingClasses: Array.isArray(n.teachingClasses) ? n.teachingClasses : [],
         regenSalary: false
       };
@@ -4585,8 +4735,8 @@ function TeacherForm({ initial, presetSubject, classes, allSubjectNames, close, 
       teacherCode: "TCH-" + String(100 + Math.floor(Math.random() * 899)),
       name: "",
       designation: "সহকারী শিক্ষক",
-      subject: presetSubject || "",
-      additionalSubjectsText: "",
+      subject: presetSubject || ((allSubjectNames && allSubjectNames[0]) || ""),
+      additionalSubjects: [],
       qualification: "",
       phone: "",
       email: "",
@@ -4603,6 +4753,23 @@ function TeacherForm({ initial, presetSubject, classes, allSubjectNames, close, 
       regenSalary: true
     };
   });
+  const [subjectSearch, setSubjectSearch] = useState("");
+  const [customSubInput, setCustomSubInput] = useState("");
+  const [customPrimaryMode, setCustomPrimaryMode] = useState(() => {
+    const cur = initial ? (initial.subject || "") : (presetSubject || "");
+    return Boolean(cur) && !(allSubjectNames || []).includes(cur);
+  });
+
+  const allSubjectChoices = useMemo(() => {
+    return Array.from(new Set([...(allSubjectNames || []), f.subject, ...(f.additionalSubjects || [])].filter(Boolean)));
+  }, [allSubjectNames, f.subject, f.additionalSubjects]);
+
+  const filteredSubjectChoices = useMemo(() => {
+    const q = subjectSearch.trim().toLowerCase();
+    if (!q) return allSubjectChoices;
+    return allSubjectChoices.filter(sb => sb.toLowerCase().includes(q));
+  }, [allSubjectChoices, subjectSearch]);
+
   const set = k => e => setF(prev => ({ ...prev, [k]: e.target.value }));
   const toggleTeachClass = clsName => {
     setF(prev => {
@@ -4613,22 +4780,55 @@ function TeacherForm({ initial, presetSubject, classes, allSubjectNames, close, 
       };
     });
   };
+  const toggleAdditionalSubject = subName => {
+    const clean = String(subName || "").trim();
+    if (!clean) return;
+    setF(prev => {
+      const cur = Array.isArray(prev.additionalSubjects) ? prev.additionalSubjects : [];
+      return {
+        ...prev,
+        additionalSubjects: cur.includes(clean) ? cur.filter(x => x !== clean) : [...cur, clean]
+      };
+    });
+  };
+  const addCustomAdditionalSubject = () => {
+    const clean = customSubInput.trim();
+    if (!clean) return;
+    setF(prev => {
+      const cur = Array.isArray(prev.additionalSubjects) ? prev.additionalSubjects : [];
+      if (cur.includes(clean)) return prev;
+      return { ...prev, additionalSubjects: [...cur, clean] };
+    });
+    setCustomSubInput("");
+  };
+
   const classTeacherSecOpts = useMemo(() => {
     if (!f.classTeacherClass) return ["ক", "খ", "গ"];
     const matched = (classes || []).find(c => c.name === f.classTeacherClass);
     return matched ? normalizeClassSections(matched).map(s => s.name) : defaultSectionNamesForClass(f.classTeacherClass);
   }, [f.classTeacherClass, classes]);
 
+  const conflictingClassTeacher = useMemo(() => {
+    if (!f.classTeacherClass || !Array.isArray(allTeachers)) return null;
+    const sec = f.classTeacherSection || classTeacherSecOpts[0] || "ক";
+    return allTeachers.find(t =>
+      (!initial || t.id !== initial.id) &&
+      t.classTeacherClass === f.classTeacherClass &&
+      (t.classTeacherSection || "ক") === sec
+    ) || null;
+  }, [f.classTeacherClass, f.classTeacherSection, classTeacherSecOpts, allTeachers, initial]);
+
   const submit = () => {
     if (!f.name.trim()) return;
-    const addSubs = String(f.additionalSubjectsText || "")
-      .split(",")
-      .map(s => s.trim())
-      .filter(Boolean);
+    const primarySub = f.subject.trim() || "সাধারণ";
+    const addSubs = Array.from(new Set((f.additionalSubjects || []).map(s => String(s || "").trim()).filter(s => s && s !== primarySub)));
     const joinDate = /^\d{4}-\d{2}-\d{2}$/.test(f.joinDate) ? f.joinDate : todayStr();
     const mSal = Math.max(0, Number(f.monthlySalary) || 0);
     const mAllow = Math.max(0, Number(f.monthlyAllowance) || 0);
-    const teachCls = f.teachingClasses && f.teachingClasses.length ? f.teachingClasses : (f.classTeacherClass ? [f.classTeacherClass] : ["ষষ্ঠ"]);
+    const baseTeachCls = f.teachingClasses && f.teachingClasses.length ? f.teachingClasses : (f.classTeacherClass ? [f.classTeacherClass] : ["ষষ্ঠ"]);
+    const teachCls = f.classTeacherClass && !baseTeachCls.includes(f.classTeacherClass)
+      ? [...baseTeachCls, f.classTeacherClass]
+      : baseTeachCls;
     const prevHistory = initial && Array.isArray(initial.salaryHistory) ? initial.salaryHistory : [];
     const salaryHistory = f.regenSalary || prevHistory.length === 0
       ? buildCareerSalaryHistory(joinDate, mSal, mAllow, (initial && initial.id) || "new")
@@ -4637,7 +4837,7 @@ function TeacherForm({ initial, presetSubject, classes, allSubjectNames, close, 
       teacherCode: f.teacherCode.trim() || "TCH-100",
       name: f.name.trim(),
       designation: f.designation.trim() || "সহকারী শিক্ষক",
-      subject: f.subject.trim() || "সাধারণ",
+      subject: primarySub,
       additionalSubjects: addSubs,
       qualification: f.qualification.trim(),
       phone: f.phone.trim(),
@@ -4654,7 +4854,7 @@ function TeacherForm({ initial, presetSubject, classes, allSubjectNames, close, 
       teachingAssignments: teachCls.map(cls => ({
         cls,
         section: f.classTeacherClass === cls ? (f.classTeacherSection || "ক") : "সব শাখা",
-        subject: f.subject.trim() || "সাধারণ"
+        subject: addSubs.length ? `${primarySub}, ${addSubs.join(", ")}` : primarySub
       })),
       salaryHistory,
       status: f.status || "সক্রিয়"
@@ -4662,7 +4862,7 @@ function TeacherForm({ initial, presetSubject, classes, allSubjectNames, close, 
   };
 
   return (
-    <ModalForm title={initial ? "শিক্ষকের তথ্য সম্পাদনা" : "নতুন শিক্ষক যোগ করুন"} sub="বিষয়, যোগদানের তারিখ, বেতন-ভাতা, শ্রেণি শিক্ষক ও পাঠদানের শ্রেণি নির্ধারণ করুন" close={close} onSubmit={submit}>
+    <ModalForm title={initial ? "শিক্ষকের তথ্য সম্পাদনা" : "নতুন শিক্ষক যোগ করুন"} sub="বিষয়, অতিরিক্ত পাঠদান বিষয়, শ্রেণি শিক্ষক নির্বাচন, যোগদানের তারিখ ও বেতন-ভাতা নির্ধারণ করুন" close={close} onSubmit={submit}>
       <Field label="শিক্ষকের নাম *"><input value={f.name} onChange={set("name")} required /></Field>
       <Field label="শিক্ষক আইডি / কোড"><input value={f.teacherCode} onChange={set("teacherCode")} placeholder="যেমন: TCH-123" /></Field>
       <Field label="পদবি">
@@ -4674,13 +4874,89 @@ function TeacherForm({ initial, presetSubject, classes, allSubjectNames, close, 
         </datalist>
       </Field>
       <Field label="প্রধান বিষয় *">
-        <input list="t-sub-opts" value={f.subject} onChange={set("subject")} placeholder="বিষয় বাছুন বা লিখুন" required />
-        <datalist id="t-sub-opts">
-          {(allSubjectNames || []).map(sb => <option key={sb} value={sb} />)}
-        </datalist>
+        {!customPrimaryMode ? (
+          <div style={{ display: "grid", gap: 4 }}>
+            <select
+              value={allSubjectChoices.includes(f.subject) ? f.subject : ""}
+              onChange={e => {
+                if (e.target.value === "__custom__") {
+                  setCustomPrimaryMode(true);
+                  setF(prev => ({ ...prev, subject: "" }));
+                } else {
+                  setF(prev => ({ ...prev, subject: e.target.value }));
+                }
+              }}
+              required
+            >
+              <option value="">— বিষয় নির্বাচন করুন —</option>
+              {allSubjectChoices.map(sb => <option key={sb} value={sb}>{sb}</option>)}
+              <option value="__custom__">+ নতুন কাস্টম বিষয় লিখুন…</option>
+            </select>
+            <button type="button" className="mini-btn" style={{ alignSelf: "start" }} onClick={() => setCustomPrimaryMode(true)}>অন্য নতুন বিষয় লিখুন</button>
+          </div>
+        ) : (
+          <div style={{ display: "flex", gap: 6 }}>
+            <input value={f.subject} onChange={set("subject")} placeholder="প্রধান বিষয়ের নাম লিখুন" required />
+            <button type="button" className="mini-btn" onClick={() => setCustomPrimaryMode(false)}>তালিকা</button>
+          </div>
+        )}
       </Field>
-      <Field label="অতিরিক্ত পড়ানো বিষয়সমূহ (কমা দিয়ে আলাদা করুন)" full>
-        <input value={f.additionalSubjectsText} onChange={set("additionalSubjectsText")} placeholder="যেমন: উচ্চতর গণিত, প্রাথমিক গণিত" />
+      <Field label={`প্রধান বিষয় ছাড়াও অন্যান্য পাঠদান বিষয়সমূহ নির্বাচন করুন (${toBnNum((f.additionalSubjects || []).length)}টি নির্বাচিত)`} full>
+        <div style={{ display: "grid", gap: 8 }}>
+          {(f.additionalSubjects || []).length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {f.additionalSubjects.map(sb => (
+                <button
+                  key={sb}
+                  type="button"
+                  className="class-chip-btn on"
+                  onClick={() => toggleAdditionalSubject(sb)}
+                  title="সরাতে ক্লিক করুন"
+                >
+                  {sb} ×
+                </button>
+              ))}
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <input
+              type="search"
+              value={subjectSearch}
+              onChange={e => setSubjectSearch(e.target.value)}
+              placeholder="বিষয় খুঁজুন (যেমন: বাংলা, গণিত, ICT, বিজ্ঞান)…"
+              style={{ flex: "1 1 200px" }}
+            />
+            <input
+              value={customSubInput}
+              onChange={e => setCustomSubInput(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addCustomAdditionalSubject(); } }}
+              placeholder="নতুন বিষয় লিখুন…"
+              style={{ flex: "1 1 160px" }}
+            />
+            <button type="button" className="btn btn-ghost btn-sm" onClick={addCustomAdditionalSubject}>+ বিষয় যোগ</button>
+          </div>
+          <div className="subject-pick-grid">
+            {filteredSubjectChoices.map(sb => {
+              const isPrimary = sb === f.subject;
+              const isSelected = (f.additionalSubjects || []).includes(sb);
+              return (
+                <button
+                  key={sb}
+                  type="button"
+                  disabled={isPrimary}
+                  className={"class-chip-btn" + (isSelected || isPrimary ? " on" : "")}
+                  style={isPrimary ? { opacity: 0.72, cursor: "default" } : undefined}
+                  onClick={() => toggleAdditionalSubject(sb)}
+                >
+                  {isPrimary ? `★ ${sb} (প্রধান)` : (isSelected ? `✓ ${sb}` : `+ ${sb}`)}
+                </button>
+              );
+            })}
+            {filteredSubjectChoices.length === 0 && (
+              <span style={{ fontSize: "12.5px", color: "var(--muted)" }}>কোনো বিষয় মিলেনি — ডানদিকের বক্সে নতুন বিষয়ের নাম লিখে "+ বিষয় যোগ" ক্লিক করুন।</span>
+            )}
+          </div>
+        </div>
       </Field>
       <Field label="শিক্ষাগত যোগ্যতা"><input value={f.qualification} onChange={set("qualification")} placeholder="যেমন: এম.এসসি, বি.এড" /></Field>
       <Field label="মোবাইল নম্বর"><input value={f.phone} onChange={set("phone")} placeholder="017XX-XXXXXX" /></Field>
@@ -4699,8 +4975,20 @@ function TeacherForm({ initial, presetSubject, classes, allSubjectNames, close, 
       </Field>
       <Field label="বর্তমান মাসিক মূল বেতন (৳)"><input type="number" min="0" value={f.monthlySalary} onChange={set("monthlySalary")} /></Field>
       <Field label="মাসিক ভাতা (বাড়িভাড়া/চিকিৎসা/টিফিন) (৳)"><input type="number" min="0" value={f.monthlyAllowance} onChange={set("monthlyAllowance")} /></Field>
-      <Field label="শ্রেণি শিক্ষক (কোন শ্রেণির দায়িত্বে)">
-        <select value={f.classTeacherClass} onChange={e => setF(prev => ({ ...prev, classTeacherClass: e.target.value, classTeacherSection: e.target.value ? (prev.classTeacherSection || "ক") : "" }))}>
+      <Field label="শ্রেণি শিক্ষক হিসেবে নির্বাচন (কোন শ্রেণির দায়িত্বে)">
+        <select
+          value={f.classTeacherClass}
+          onChange={e => {
+            const clsVal = e.target.value;
+            const matchedCls = (classes || []).find(c => c.name === clsVal);
+            const secList = clsVal ? (matchedCls ? normalizeClassSections(matchedCls).map(s => s.name) : defaultSectionNamesForClass(clsVal)) : [];
+            setF(prev => ({
+              ...prev,
+              classTeacherClass: clsVal,
+              classTeacherSection: clsVal ? (secList.includes(prev.classTeacherSection) ? prev.classTeacherSection : (secList[0] || "ক")) : ""
+            }));
+          }}
+        >
           <option value="">— শ্রেণি শিক্ষক নন —</option>
           {classOpts.map(c => <option key={c} value={c}>{c}</option>)}
         </select>
@@ -4709,6 +4997,11 @@ function TeacherForm({ initial, presetSubject, classes, allSubjectNames, close, 
         <select value={f.classTeacherSection} onChange={set("classTeacherSection")} disabled={!f.classTeacherClass}>
           {classTeacherSecOpts.map(sec => <option key={sec} value={sec}>{sec}</option>)}
         </select>
+        {conflictingClassTeacher && (
+          <div style={{ fontSize: "12px", color: "var(--accent)", marginTop: 4 }}>
+            ⚠ বর্তমানে এই শাখার শ্রেণি শিক্ষক: <b>{conflictingClassTeacher.name}</b> — সংরক্ষণ করলে এই শিক্ষককে দায়িত্ব দেওয়া হবে।
+          </div>
+        )}
       </Field>
       <Field label="যেসব শ্রেণিতে ক্লাস নেন (একাধিক বাছুন)" full>
         <div className="class-chip-grid">
@@ -4787,7 +5080,7 @@ function TeacherPublicProfileModal({ teacher, settings, close }) {
   );
 }
 
-function TeacherProfileModal({ teacher, settings, onUpdateTeacher, onEdit, onOpenIdCard, close, toast }) {
+function TeacherProfileModal({ teacher, settings, classes, allTeachers, allSubjectNames, onAssignClassTeacher, onUpdateTeacher, onEdit, onOpenIdCard, close, toast }) {
   const [payDate, setPayDate] = useState(todayStr());
   const [payMonth, setPayMonth] = useState(() => BN_MONTHS[new Date().getMonth()] + " " + toBnNum(new Date().getFullYear()));
   const [payBasic, setPayBasic] = useState(String(teacher.monthlySalary || 26000));
@@ -4796,6 +5089,75 @@ function TeacherProfileModal({ teacher, settings, onUpdateTeacher, onEdit, onOpe
   const [payDeduct, setPayDeduct] = useState("0");
   const [payNote, setPayNote] = useState("মাসিক বেতন ও ভাতা");
   const [showAddPay, setShowAddPay] = useState(false);
+
+  const [editDutyOpen, setEditDutyOpen] = useState(false);
+  const [ctCls, setCtCls] = useState(teacher.classTeacherClass || "");
+  const [ctSec, setCtSec] = useState(teacher.classTeacherSection || "ক");
+  const [primarySub, setPrimarySub] = useState(teacher.subject || "");
+  const [extraSubs, setExtraSubs] = useState(() => Array.isArray(teacher.additionalSubjects) ? teacher.additionalSubjects : []);
+  const [teachClasses, setTeachClasses] = useState(() => Array.isArray(teacher.teachingClasses) ? teacher.teachingClasses : []);
+  const [subFilterQ, setSubFilterQ] = useState("");
+  const [customExtraSub, setCustomExtraSub] = useState("");
+
+  useEffect(() => {
+    setCtCls(teacher.classTeacherClass || "");
+    setCtSec(teacher.classTeacherSection || "ক");
+    setPrimarySub(teacher.subject || "");
+    setExtraSubs(Array.isArray(teacher.additionalSubjects) ? teacher.additionalSubjects : []);
+    setTeachClasses(Array.isArray(teacher.teachingClasses) ? teacher.teachingClasses : []);
+  }, [teacher.id, teacher.classTeacherClass, teacher.classTeacherSection, teacher.subject, teacher.additionalSubjects, teacher.teachingClasses]);
+
+  const classOpts = useMemo(() => {
+    const names = (classes || []).map(c => c.name).filter(Boolean);
+    return names.length ? names : CLASS_NAMES;
+  }, [classes]);
+
+  const ctSecOpts = useMemo(() => {
+    if (!ctCls) return ["ক", "খ", "গ"];
+    const matched = (classes || []).find(c => c.name === ctCls);
+    return matched ? normalizeClassSections(matched).map(s => s.name) : defaultSectionNamesForClass(ctCls);
+  }, [ctCls, classes]);
+
+  const ctConflict = useMemo(() => {
+    if (!ctCls || !Array.isArray(allTeachers)) return null;
+    const sec = ctSec || ctSecOpts[0] || "ক";
+    return allTeachers.find(t => t.id !== teacher.id && t.classTeacherClass === ctCls && (t.classTeacherSection || "ক") === sec) || null;
+  }, [ctCls, ctSec, ctSecOpts, allTeachers, teacher.id]);
+
+  const subjectChoices = useMemo(() => {
+    return Array.from(new Set([...(allSubjectNames || []), primarySub, ...extraSubs].filter(Boolean)));
+  }, [allSubjectNames, primarySub, extraSubs]);
+
+  const visibleSubjectChoices = useMemo(() => {
+    const q = subFilterQ.trim().toLowerCase();
+    if (!q) return subjectChoices;
+    return subjectChoices.filter(sb => sb.toLowerCase().includes(q));
+  }, [subjectChoices, subFilterQ]);
+
+  const saveQuickAssignments = e => {
+    e.preventDefault();
+    const cleanPrimary = primarySub.trim() || teacher.subject || "সাধারণ";
+    const cleanExtras = Array.from(new Set(extraSubs.map(s => String(s || "").trim()).filter(s => s && s !== cleanPrimary)));
+    const nextTeachClasses = ctCls && !teachClasses.includes(ctCls) ? [...teachClasses, ctCls] : teachClasses;
+    onUpdateTeacher({
+      subject: cleanPrimary,
+      additionalSubjects: cleanExtras,
+      teachingClasses: nextTeachClasses.length ? nextTeachClasses : ["ষষ্ঠ"],
+      teachingAssignments: (nextTeachClasses.length ? nextTeachClasses : ["ষষ্ঠ"]).map(cls => ({
+        cls,
+        section: ctCls === cls ? (ctSec || ctSecOpts[0] || "ক") : "সব শাখা",
+        subject: cleanExtras.length ? `${cleanPrimary}, ${cleanExtras.join(", ")}` : cleanPrimary
+      }))
+    });
+    if (ctCls) {
+      if (onAssignClassTeacher) onAssignClassTeacher(teacher.id, ctCls, ctSec || ctSecOpts[0] || "ক");
+    } else if (teacher.classTeacherClass && onAssignClassTeacher) {
+      onAssignClassTeacher("", teacher.classTeacherClass, teacher.classTeacherSection || "ক");
+    } else {
+      toast("শিক্ষকের শ্রেণি শিক্ষক ও পাঠদান বিষয় আপডেট হয়েছে");
+    }
+    setEditDutyOpen(false);
+  };
 
   const history = useMemo(() => {
     const list = Array.isArray(teacher.salaryHistory) ? teacher.salaryHistory : [];
@@ -4903,12 +5265,27 @@ function TeacherProfileModal({ teacher, settings, onUpdateTeacher, onEdit, onOpe
 
         <div className="grid2" style={{ marginBottom: 14 }}>
           <div className="card">
-            <h3 style={{ margin: "0 0 8px", fontSize: 16 }}>বিষয় ও শ্রেণি শিক্ষকের দায়িত্ব</h3>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+              <h3 style={{ margin: 0, fontSize: 16 }}>বিষয় ও শ্রেণি শিক্ষকের দায়িত্ব</h3>
+              <button
+                type="button"
+                className="mini-btn no-print"
+                style={{ background: editDutyOpen ? "var(--brand)" : "var(--brand-soft)", color: editDutyOpen ? "#fff" : "var(--brand-dark)", borderColor: "var(--brand)" }}
+                onClick={() => setEditDutyOpen(v => !v)}
+              >
+                {editDutyOpen ? "বন্ধ করুন" : "⚙ শ্রেণি শিক্ষক ও বিষয় নির্বাচন"}
+              </button>
+            </div>
             <div style={{ fontSize: "14px", display: "grid", gap: 7 }}>
-              <div><b>যে বিষয়ের শিক্ষক:</b> <span className="sub-badge">{teacher.subject}</span></div>
-              {(teacher.additionalSubjects || []).length > 0 && (
-                <div><b>অতিরিক্ত পাঠদান বিষয়:</b> {teacher.additionalSubjects.join(", ")}</div>
-              )}
+              <div><b>প্রধান বিষয়:</b> <span className="sub-badge">{teacher.subject}</span></div>
+              <div>
+                <b>অতিরিক্ত পাঠদান বিষয়:</b>{" "}
+                {(teacher.additionalSubjects || []).length > 0
+                  ? <span style={{ display: "inline-flex", flexWrap: "wrap", gap: 4, verticalAlign: "middle" }}>
+                      {teacher.additionalSubjects.map(s => <span key={s} className="sub-badge warn">{s}</span>)}
+                    </span>
+                  : <span style={{ color: "var(--muted)" }}>নির্বাচিত নেই</span>}
+              </div>
               <div>
                 <b>কোন শ্রেণির শ্রেণি শিক্ষক:</b>{" "}
                 {teacher.classTeacherClass
@@ -4937,6 +5314,120 @@ function TeacherProfileModal({ teacher, settings, onUpdateTeacher, onEdit, onOpe
             )}
           </div>
         </div>
+
+        {editDutyOpen && (
+          <form onSubmit={saveQuickAssignments} className="card no-print" style={{ marginBottom: 14, background: "var(--surface2)", border: "1.5px solid var(--brand)" }}>
+            <h3 style={{ margin: "0 0 8px", fontSize: 16, color: "var(--brand-dark)" }}>শ্রেণি শিক্ষক ও বিষয়ভিত্তিক পাঠদান নির্বাচন</h3>
+            <div className="form-grid">
+              <Field label="শ্রেণি শিক্ষক হিসেবে নির্বাচন (শ্রেণি)">
+                <select
+                  value={ctCls}
+                  onChange={e => {
+                    const clsVal = e.target.value;
+                    setCtCls(clsVal);
+                    if (clsVal) {
+                      const matchedCls = (classes || []).find(c => c.name === clsVal);
+                      const secList = matchedCls ? normalizeClassSections(matchedCls).map(s => s.name) : defaultSectionNamesForClass(clsVal);
+                      if (!secList.includes(ctSec)) setCtSec(secList[0] || "ক");
+                    }
+                  }}
+                >
+                  <option value="">— শ্রেণি শিক্ষক নন —</option>
+                  {classOpts.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </Field>
+              <Field label="শ্রেণি শিক্ষকের শাখা">
+                <select value={ctSec} onChange={e => setCtSec(e.target.value)} disabled={!ctCls}>
+                  {ctSecOpts.map(sec => <option key={sec} value={sec}>{sec}</option>)}
+                </select>
+                {ctConflict && (
+                  <div style={{ fontSize: "12px", color: "var(--accent)", marginTop: 4 }}>
+                    ⚠ বর্তমানে {ctConflict.name} এই শাখার শ্রেণি শিক্ষক — সংরক্ষণ করলে বদলি হবে।
+                  </div>
+                )}
+              </Field>
+              <Field label="প্রধান বিষয় *">
+                <select value={subjectChoices.includes(primarySub) ? primarySub : ""} onChange={e => setPrimarySub(e.target.value)}>
+                  {subjectChoices.map(sb => <option key={sb} value={sb}>{sb}</option>)}
+                </select>
+              </Field>
+              <Field label="নতুন বিষয় যোগ (তালিকায় না থাকলে)">
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input
+                    value={customExtraSub}
+                    onChange={e => setCustomExtraSub(e.target.value)}
+                    placeholder="যেমন: উচ্চতর গণিত"
+                    onKeyDown={e => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        const nm = customExtraSub.trim();
+                        if (nm && !extraSubs.includes(nm)) setExtraSubs(prev => [...prev, nm]);
+                        setCustomExtraSub("");
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => {
+                      const nm = customExtraSub.trim();
+                      if (nm && !extraSubs.includes(nm)) setExtraSubs(prev => [...prev, nm]);
+                      setCustomExtraSub("");
+                    }}
+                  >+ যোগ</button>
+                </div>
+              </Field>
+              <Field label={`প্রধান বিষয় ছাড়াও অন্যান্য বিষয়সমূহ (${toBnNum(extraSubs.length)}টি নির্বাচিত)`} full>
+                <input
+                  type="search"
+                  value={subFilterQ}
+                  onChange={e => setSubFilterQ(e.target.value)}
+                  placeholder="বিষয় খুঁজুন…"
+                  style={{ marginBottom: 6 }}
+                />
+                <div className="subject-pick-grid">
+                  {visibleSubjectChoices.map(sb => {
+                    const isPrimary = sb === primarySub;
+                    const on = extraSubs.includes(sb);
+                    return (
+                      <button
+                        key={sb}
+                        type="button"
+                        disabled={isPrimary}
+                        className={"class-chip-btn" + (on || isPrimary ? " on" : "")}
+                        style={isPrimary ? { opacity: 0.72 } : undefined}
+                        onClick={() => setExtraSubs(prev => prev.includes(sb) ? prev.filter(x => x !== sb) : [...prev, sb])}
+                      >
+                        {isPrimary ? `★ ${sb}` : (on ? `✓ ${sb}` : `+ ${sb}`)}
+                      </button>
+                    );
+                  })}
+                </div>
+              </Field>
+              <Field label="যেসব শ্রেণিতে ক্লাস পান (একাধিক বাছুন)" full>
+                <div className="class-chip-grid">
+                  {classOpts.map(clsName => {
+                    const on = teachClasses.includes(clsName);
+                    return (
+                      <button
+                        key={clsName}
+                        type="button"
+                        className={"class-chip-btn" + (on ? " on" : "")}
+                        onClick={() => setTeachClasses(prev => prev.includes(clsName) ? prev.filter(x => x !== clsName) : [...prev, clsName])}
+                      >
+                        {on ? "✓ " : ""}{clsName}
+                      </button>
+                    );
+                  })}
+                </div>
+              </Field>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+              <button type="submit" className="btn btn-brand btn-sm">✓ শ্রেণি শিক্ষক ও বিষয় সংরক্ষণ করুন</button>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => setEditDutyOpen(false)}>বাতিল</button>
+            </div>
+          </form>
+        )}
 
         <div className="hist-stats">
           <div className="hist-stat">
@@ -6081,6 +6572,11 @@ function computeSliceDiff(prevSnap, nextSnap) {
     }
   }
 
+  if (prevSnap.routine !== nextSnap.routine && nextSnap.routine) {
+    changes.routine = nextSnap.routine;
+    hasAny = true;
+  }
+
   return { changes, removals, hasAny };
 }
 
@@ -6142,6 +6638,9 @@ function App() {
         routes: Array.isArray(snapData.routes) ? snapData.routes : prev.routes,
         costTypes: Array.isArray(snapData.costTypes) && snapData.costTypes.length ? snapData.costTypes : prev.costTypes,
         media: Array.isArray(snapData.media) ? snapData.media : prev.media,
+        routine: snapData.routine && typeof snapData.routine === "object"
+          ? normalizeRoutineState(snapData.routine)
+          : prev.routine,
       };
       if (!authTokenRef.current) {
         lastSyncedRef.current = next;
@@ -6157,6 +6656,7 @@ function App() {
           routes: next.routes,
           costTypes: next.costTypes,
           media: next.media,
+          routine: next.routine,
         };
       }
       return next;
@@ -6191,6 +6691,9 @@ function App() {
         routes: Array.isArray(snapData.routes) ? snapData.routes : prev.routes,
         costTypes: Array.isArray(snapData.costTypes) && snapData.costTypes.length ? snapData.costTypes : prev.costTypes,
         media: Array.isArray(snapData.media) ? snapData.media : prev.media,
+        routine: snapData.routine && typeof snapData.routine === "object"
+          ? normalizeRoutineState(snapData.routine)
+          : prev.routine,
         students: Array.isArray(snapData.students) && snapData.students.length ? snapData.students : prev.students,
         studentCosts: Array.isArray(snapData.studentCosts) && snapData.studentCosts.length ? snapData.studentCosts : prev.studentCosts,
         paymentHistory: Array.isArray(snapData.paymentHistory) ? snapData.paymentHistory : prev.paymentHistory,
@@ -6360,6 +6863,9 @@ function App() {
     }
     if (cur.officeAttendance && Object.keys(cur.officeAttendance).length > 0) {
       fullChanges.officeAttendance = cur.officeAttendance;
+    }
+    if (cur.routine) {
+      fullChanges.routine = cur.routine;
     }
     const ok = await sendSyncPayload(fullChanges, {}, cur);
     toast(
