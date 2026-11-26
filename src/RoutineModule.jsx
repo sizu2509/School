@@ -15,9 +15,12 @@ import {
   mergedPeriodTimeRangeBn,
   getCoveredPeriodsForRow,
   findTeacherClashes,
+  getConsecutiveStreakMap,
+  checkTeacherStreakIfAssigned,
   computeTeacherWeeklyStats,
   deriveTeacherDayRow,
-  generateSmartMasterRoutine
+  generateSmartMasterRoutine,
+  autoCoordinateRoutineViolations
 } from "./routineUtils.js";
 
 function escapeHtml(v) {
@@ -57,9 +60,12 @@ function RoutineSlotModal({
   routine,
   timeline,
   allSectionsMeta,
+  allSectionKeys,
   teachers,
   allSubjectNames,
   normalizeSectionSubjects,
+  teacherCoversSubject,
+  canApproveConsecutive,
   onSave,
   onDelete,
   onClose
@@ -102,6 +108,7 @@ function RoutineSlotModal({
   });
   const [room, setRoom] = useState(() => (existingEntry && existingEntry.room) || (curMeta && curMeta.room) || "");
   const [note, setNote] = useState(() => (existingEntry && existingEntry.note) || "");
+  const [adminApproveStreak, setAdminApproveStreak] = useState(() => Boolean(existingEntry && existingEntry.adminApprovedStreak));
   const [formErr, setFormErr] = useState("");
 
   // Sync form state when picking a different cell inside the "+ রুটিনে ক্লাস দিন" modal flow
@@ -115,6 +122,7 @@ function RoutineSlotModal({
       setCommonTargets(Array.from(new Set([nSecKey, ...(nxt.commonTargets || [])])));
       setRoom(nxt.room || (meta && meta.room) || "");
       setNote(nxt.note || "");
+      setAdminApproveStreak(Boolean(nxt.adminApprovedStreak));
     } else {
       setSpan(1);
       setItems([{
@@ -126,6 +134,7 @@ function RoutineSlotModal({
       setCommonTargets([nSecKey]);
       setRoom((meta && meta.room) || "");
       setNote("");
+      setAdminApproveStreak(false);
     }
     setFormErr("");
   };
@@ -170,6 +179,108 @@ function RoutineSlotModal({
     setCommonTargets(Array.from(new Set([secKey, ...keys])));
   };
 
+  const activeCommonTargets = useMemo(
+    () => (isCommon ? Array.from(new Set([secKey, ...commonTargets])) : [secKey]),
+    [isCommon, secKey, commonTargets]
+  );
+
+  const itemStreakChecks = useMemo(
+    () =>
+      items.map(it =>
+        it.teacherId
+          ? checkTeacherStreakIfAssigned({
+              entries: routine.entries || {},
+              timeline,
+              allSectionKeys,
+              day,
+              secKey,
+              period,
+              span: effectiveSpan,
+              teacherId: it.teacherId,
+              commonTargets: activeCommonTargets
+            })
+          : { violates: false, streakPeriods: [] }
+      ),
+    [items, routine.entries, timeline, allSectionKeys, day, secKey, period, effectiveSpan, activeCommonTargets]
+  );
+
+  const violatingEntries = useMemo(() => {
+    const out = [];
+    items.forEach((it, idx) => {
+      const res = itemStreakChecks[idx];
+      if (it.teacherId && res && res.violates) {
+        const t = teachers.find(x => x.id === it.teacherId);
+        out.push({
+          idx,
+          teacherId: it.teacherId,
+          teacherName: t ? t.name : it.teacherId,
+          subject: it.subject,
+          streakPeriods: res.streakPeriods
+        });
+      }
+    });
+    return out;
+  }, [items, itemStreakChecks, teachers]);
+
+  const maxViolatingLen = violatingEntries.reduce(
+    (mx, v) => Math.max(mx, v.streakPeriods.length),
+    0
+  );
+
+  const pickSafeAlternateTeacher = rowIdx => {
+    const row = items[rowIdx];
+    if (!row) return;
+    const isSafe = t => {
+      if (t.id === row.teacherId) return false;
+      const st = slotFreeStatusForTeacher(
+        routine.entries,
+        day,
+        period,
+        effectiveSpan,
+        t.id,
+        secKey,
+        existingEntry ? existingEntry.commonId : "",
+        timeline
+      );
+      if (!st.free) return false;
+      const sk = checkTeacherStreakIfAssigned({
+        entries: routine.entries || {},
+        timeline,
+        allSectionKeys,
+        day,
+        secKey,
+        period,
+        span: effectiveSpan,
+        teacherId: t.id,
+        commonTargets: activeCommonTargets
+      });
+      return !sk.violates;
+    };
+
+    const match =
+      (row.subject &&
+        teachers.find(
+          t =>
+            isSafe(t) &&
+            teacherCoversSubject &&
+            teacherCoversSubject(t, row.subject) &&
+            curMeta &&
+            (t.teachingClasses || []).includes(curMeta.clsName)
+        )) ||
+      (row.subject &&
+        teachers.find(t => isSafe(t) && teacherCoversSubject && teacherCoversSubject(t, row.subject))) ||
+      teachers.find(t => isSafe(t) && curMeta && (t.teachingClasses || []).includes(curMeta.clsName)) ||
+      teachers.find(isSafe);
+
+    if (!match) {
+      setFormErr("এই পিরিয়ডে বিরতি/সংঘর্ষ ছাড়া কোনো বিকল্প শিক্ষক ফাঁকা পাওয়া যায়নি। চাইলে অন্য পিরিয়ড বেছে নিন বা অ্যাডমিন অনুমোদন ব্যবহার করুন।");
+      return;
+    }
+
+    setItems(prev => prev.map((x, i) => (i === rowIdx ? { ...x, teacherId: match.id } : x)));
+    setFormErr("");
+  };
+
   const handleSubmit = e => {
     e.preventDefault();
     const cleaned = items
@@ -185,11 +296,22 @@ function RoutineSlotModal({
       return;
     }
 
-    const activeTargets = isCommon
-      ? Array.from(new Set([secKey, ...commonTargets]))
-      : [secKey];
+    if (violatingEntries.length > 0) {
+      if (!canApproveConsecutive) {
+        setFormErr(
+          "একজন শিক্ষকের বিরতি/টিফিন ছাড়া পর পর ৩টি ক্লাস থাকতে পারবে না। অন্য নিরাপদ শিক্ষক নির্বাচন করুন অথবা অ্যাডমিনের অনুমোদন নিন।"
+        );
+        return;
+      }
+      if (!adminApproveStreak) {
+        setFormErr(
+          "টানা ৩+ ক্লাসের শর্ত ভঙ্গ হয়েছে — অন্য নিরাপদ শিক্ষক বসান অথবা নিচের 'অ্যাডমিন অনুমোদন' চেকবক্সে টিক দিন।"
+        );
+        return;
+      }
+    }
 
-    const finalCommonId = isCommon && activeTargets.length > 1
+    const finalCommonId = isCommon && activeCommonTargets.length > 1
       ? (existingEntry && existingEntry.commonId ? existingEntry.commonId : `cmn-${Date.now().toString(36)}`)
       : "";
 
@@ -200,10 +322,15 @@ function RoutineSlotModal({
       span: effectiveSpan,
       items: cleaned,
       commonId: finalCommonId,
-      commonTargets: finalCommonId ? activeTargets : [],
+      commonTargets: finalCommonId ? activeCommonTargets : [],
       oldCommonId: existingEntry ? existingEntry.commonId : "",
       room: room.trim() || (curMeta && curMeta.room) || "",
-      note: note.trim()
+      note: note.trim(),
+      adminApprovedStreak: violatingEntries.length > 0 && canApproveConsecutive && adminApproveStreak,
+      approvedStreakLimit:
+        violatingEntries.length > 0 && canApproveConsecutive && adminApproveStreak
+          ? Math.max(3, maxViolatingLen)
+          : 0
     });
   };
 
@@ -348,6 +475,7 @@ function RoutineSlotModal({
                 existingEntry ? existingEntry.commonId : "",
                 timeline
               );
+              const curStreak = itemStreakChecks[idx] || { violates: false, streakPeriods: [] };
               return (
                 <div key={idx} className="routine-split-row">
                   <div>
@@ -360,7 +488,7 @@ function RoutineSlotModal({
                     />
                   </div>
                   <div>
-                    <label>শিক্ষক (ফাঁকা/ব্যস্ত অবস্থা সহ)</label>
+                    <label>শিক্ষক (ফাঁকা ও টানা ক্লাসের শর্ত সহ)</label>
                     <select
                       value={it.teacherId}
                       onChange={e => setItems(prev => prev.map((x, i) => i === idx ? { ...x, teacherId: e.target.value } : x))}
@@ -377,9 +505,25 @@ function RoutineSlotModal({
                           existingEntry ? existingEntry.commonId : "",
                           timeline
                         );
+                        const sk = checkTeacherStreakIfAssigned({
+                          entries: routine.entries || {},
+                          timeline,
+                          allSectionKeys,
+                          day,
+                          secKey,
+                          period,
+                          span: effectiveSpan,
+                          teacherId: t.id,
+                          commonTargets: activeCommonTargets
+                        });
+                        const tagLabel = !st.free
+                          ? `⚠ ব্যস্ত: ${st.busyAt[0]}`
+                          : sk.violates
+                            ? `⚠ টানা ${toBnStr(sk.streakPeriods.length)} ক্লাস হবে`
+                            : "✓ নিরাপদ ও ফাঁকা";
                         return (
                           <option key={t.id} value={t.id}>
-                            {t.name} ({t.subject}) — {st.free ? "✓ ফাঁকা" : `⚠ ব্যস্ত: ${st.busyAt[0]}`}
+                            {t.name} ({t.subject}) — {tagLabel}
                           </option>
                         );
                       })}
@@ -387,6 +531,22 @@ function RoutineSlotModal({
                     {it.teacherId && !teacherStatus.free && (
                       <div style={{ fontSize: "11.5px", color: "var(--danger)", fontWeight: 700, marginTop: 3 }}>
                         সংঘর্ষ: এই শিক্ষক এই সময়ে {teacherStatus.busyAt.join(", ")} ক্লাসে নির্ধারিত আছেন।
+                      </div>
+                    )}
+                    {it.teacherId && curStreak.violates && (
+                      <div style={{ fontSize: "11.5px", color: "#b45309", fontWeight: 700, marginTop: 3, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                        <span>
+                          সতর্কতা: বিরতি/টিফিন ছাড়া টানা {toBnStr(curStreak.streakPeriods.length)} ক্লাস (
+                          {curStreak.streakPeriods.map(pNum => ordinalPeriodBn(pNum)).join(", ")} পিরিয়ড)।
+                        </span>
+                        <button
+                          type="button"
+                          className="mini-btn"
+                          style={{ minHeight: 24, padding: "2px 8px", fontSize: "11.5px", background: "var(--brand-soft)", color: "var(--brand-dark)", borderColor: "var(--brand)" }}
+                          onClick={() => pickSafeAlternateTeacher(idx)}
+                        >
+                          অন্য নিরাপদ শিক্ষক বসান
+                        </button>
                       </div>
                     )}
                   </div>
@@ -499,6 +659,51 @@ function RoutineSlotModal({
           </div>
         </div>
 
+        {violatingEntries.length > 0 && (
+          <div className="routine-streak-banner" style={{ marginTop: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
+              <div>
+                <b>টানা ২ ক্লাস সীমা সতর্কতা:</b>{" "}
+                {violatingEntries.map((v, i) => (
+                  <span key={i}>
+                    {i > 0 ? " · " : ""}
+                    <b>{v.teacherName}</b> — বিরতি ছাড়া টানা {toBnStr(v.streakPeriods.length)}টি ক্লাস (
+                    {v.streakPeriods.map(pNum => ordinalPeriodBn(pNum)).join(", ")})
+                  </span>
+                ))}
+                <div style={{ fontSize: "12px", marginTop: 4 }}>
+                  নিয়ম অনুযায়ী দুই ক্লাসের পর কমপক্ষে ১টি ফাঁকা পিরিয়ড বা বিরতি/টিফিন থাকতে হবে। নতুবা কেবল অ্যাডমিনের অনুমতিক্রমেই টানা ৩+ ক্লাস দেওয়া যাবে।
+                </div>
+              </div>
+              {violatingEntries.length === 1 && (
+                <button
+                  type="button"
+                  className="mini-btn"
+                  style={{ background: "var(--brand)", color: "#fff", borderColor: "var(--brand)" }}
+                  onClick={() => pickSafeAlternateTeacher(violatingEntries[0].idx)}
+                >
+                  অন্য নিরাপদ শিক্ষকের সাথে সমন্বয়
+                </button>
+              )}
+            </div>
+
+            {canApproveConsecutive ? (
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 8, marginTop: 8, marginBottom: 0, cursor: "pointer", fontWeight: 700 }}>
+                <input
+                  type="checkbox"
+                  checked={adminApproveStreak}
+                  onChange={e => setAdminApproveStreak(e.target.checked)}
+                />
+                অ্যাডমিন অনুমোদন: বিশেষ প্রয়োজনে বিরতি ছাড়া টানা {toBnStr(maxViolatingLen)} ক্লাস অনুমোদন করছি
+              </label>
+            ) : (
+              <div style={{ marginTop: 6, fontSize: "12px", fontWeight: 700, color: "var(--danger)" }}>
+                বিশেষ দ্রষ্টব্য: টানা ৩+ ক্লাস সেট করতে মাস্টার অ্যাডমিনের অনুমোদন প্রয়োজন। অনুগ্রহ করে নিরাপদ শিক্ষক বেছে নিন।
+              </div>
+            )}
+          </div>
+        )}
+
         {formErr && (
           <div style={{ marginTop: 10, padding: "8px 10px", borderRadius: 8, background: "var(--danger-soft)", color: "var(--danger)", fontSize: "13px", fontWeight: 700 }}>
             {formErr}
@@ -522,6 +727,7 @@ export default function RoutineModule({
   data,
   setData,
   isStudent,
+  canApproveConsecutive = false,
   settings,
   allSchoolSubjectNames,
   normalizeClassSections,
@@ -570,6 +776,15 @@ export default function RoutineModule({
     [routine, timeline, allSectionKeys]
   );
   const clashKeys = useMemo(() => Object.keys(clashMap), [clashMap]);
+
+  const streakInfo = useMemo(
+    () => getConsecutiveStreakMap(routine, timeline, allSectionKeys),
+    [routine, timeline, allSectionKeys]
+  );
+  const allStreakRuns = useMemo(() => Object.values(streakInfo.violations).flat(), [streakInfo]);
+  const unapprovedStreakRuns = useMemo(() => allStreakRuns.filter(r => !r.approved), [allStreakRuns]);
+  const approvedStreakRuns = useMemo(() => allStreakRuns.filter(r => r.approved), [allStreakRuns]);
+  const cellStreakStatus = streakInfo.cellStreakStatus;
 
   const teacherStats = useMemo(
     () => computeTeacherWeeklyStats(routine, timeline, teachers, allSectionsMeta),
@@ -667,9 +882,72 @@ export default function RoutineModule({
       normalizeTeacherRecord,
       teacherCoversSubject
     });
+    const postCheck = getConsecutiveStreakMap(generated, timeline, allSectionKeys);
+    const unapprovedLeft = Object.values(postCheck.violations).flat().filter(r => !r.approved).length;
     updateRoutine(generated);
     setConfirmAutoGen(false);
-    toast("কাস্টোমাইজড সময় ও বিরতি অনুযায়ী মাস্টার, শিক্ষক ও শ্রেণি ভিত্তিক রুটিন তৈরি হয়েছে!");
+    if (unapprovedLeft > 0) {
+      toast(`রুটিন তৈরি হয়েছে — তবে শিক্ষক সংকটের কারণে ${toBnStr(unapprovedLeft)}টি ক্ষেত্রে টানা ৩+ ক্লাস সতর্কতা রয়েছে (অ্যাডমিন অনুমোদন প্রয়োজন)।`, true);
+    } else {
+      toast("টানা ২ ক্লাসের সীমা ও বিরতি শর্ত মেনে মাস্টার, শিক্ষক ও শ্রেণি ভিত্তিক রুটিন তৈরি হয়েছে!");
+    }
+  };
+
+  const runAutoCoordinateStreaks = () => {
+    const { routine: nextRoutine, fixedCount } = autoCoordinateRoutineViolations({
+      routine,
+      timeline,
+      allSectionsMeta,
+      teachers: data.teachers || [],
+      normalizeTeacherRecord,
+      teacherCoversSubject
+    });
+    updateRoutine(nextRoutine);
+    if (fixedCount > 0) {
+      toast(`অন্য শিক্ষকদের সাথে অটো-সমন্বয় করে ${toBnStr(fixedCount)}টি টানা ৩+ ক্লাস সমস্যার সমাধান হয়েছে!`);
+    } else {
+      toast("অটো-সমন্বয়ের মতো কোনো নিরাপদ বিকল্প শিক্ষক ফাঁকা পাওয়া যায়নি — চাইলে অ্যাডমিন অনুমোদন দিতে পারেন।", true);
+    }
+  };
+
+  const approveStreakRun = run => {
+    if (!canApproveConsecutive) {
+      toast("টানা ৩+ ক্লাস অনুমোদনের অনুমতি কেবল অ্যাডমিনের আছে", true);
+      return;
+    }
+    const targetOwnerKey = run.ownerKeys[run.ownerKeys.length - 1];
+    if (!targetOwnerKey) return;
+    updateRoutine(prev => {
+      const e = prev.entries[targetOwnerKey];
+      if (!e) return prev;
+      return {
+        ...prev,
+        entries: {
+          ...prev.entries,
+          [targetOwnerKey]: {
+            ...e,
+            adminApprovedStreak: true,
+            approvedStreakLimit: Math.max(3, run.periods.length)
+          }
+        }
+      };
+    });
+    const t = teacherById.get(run.teacherId);
+    toast(`${t ? t.name : "শিক্ষক"}-এর ${run.day}-এর টানা ${toBnStr(run.periods.length)} ক্লাস অ্যাডমিন কর্তৃক অনুমোদিত হয়েছে`);
+  };
+
+  const revokeStreakApproval = run => {
+    if (!canApproveConsecutive) return;
+    updateRoutine(prev => {
+      const nextEntries = { ...prev.entries };
+      run.ownerKeys.forEach(ok => {
+        if (nextEntries[ok] && nextEntries[ok].adminApprovedStreak) {
+          nextEntries[ok] = { ...nextEntries[ok], adminApprovedStreak: false, approvedStreakLimit: 0 };
+        }
+      });
+      return { ...prev, entries: nextEntries };
+    });
+    toast("টানা ৩+ ক্লাসের অ্যাডমিন অনুমোদন প্রত্যাহার করা হয়েছে");
   };
 
   const runClearAllEntries = () => {
@@ -720,7 +998,9 @@ export default function RoutineModule({
           commonId: payload.commonId || "",
           commonTargets: payload.commonId ? targets : [],
           room: payload.room || (meta && meta.room) || "",
-          note: payload.note || ""
+          note: payload.note || "",
+          adminApprovedStreak: Boolean(payload.adminApprovedStreak),
+          approvedStreakLimit: payload.adminApprovedStreak ? Number(payload.approvedStreakLimit) || 3 : 0
         };
       });
 
@@ -930,6 +1210,20 @@ export default function RoutineModule({
         <div className={`routine-kpi ${clashKeys.length > 0 ? "danger" : "ok"}`}>
           <b className="tabular-nums">{toBnStr(clashKeys.length)}টি</b>
           <span>{clashKeys.length === 0 ? "শিক্ষক সংঘর্ষ মুক্ত" : "শিক্ষক সময় সংঘর্ষ — ঠিক করুন"}</span>
+        </div>
+        <div className={`routine-kpi ${unapprovedStreakRuns.length > 0 ? "danger" : "ok"}`}>
+          <b className="tabular-nums">
+            {unapprovedStreakRuns.length > 0
+              ? `${toBnStr(unapprovedStreakRuns.length)}টি`
+              : approvedStreakRuns.length > 0
+                ? `${toBnStr(approvedStreakRuns.length)}টি অনুমোদিত`
+                : "০টি"}
+          </b>
+          <span>
+            {unapprovedStreakRuns.length > 0
+              ? "টানা ৩+ ক্লাস — সমন্বয় / অনুমোদন দিন"
+              : "সর্বোচ্চ ২ টানা ক্লাস শর্ত সুরক্ষিত"}
+          </span>
         </div>
       </div>
 
@@ -1191,6 +1485,83 @@ export default function RoutineModule({
             );
           })}
           {clashKeys.length > 6 ? ` এবং আরও ${toBnStr(clashKeys.length - 6)}টি` : ""}
+        </div>
+      )}
+
+      {/* টানা ৩+ ক্লাস সতর্কতা ও অটো-সমন্বয় / অ্যাডমিন অনুমোদন ব্যানার */}
+      {unapprovedStreakRuns.length > 0 && (
+        <div className="routine-streak-banner">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
+            <div>
+              <b>টানা ৩+ ক্লাস সীমা সতর্কতা ({toBnStr(unapprovedStreakRuns.length)}টি):</b>{" "}
+              একজন শিক্ষকের বিরতি/টিফিন ছাড়া পর পর ৩টি ক্লাস থাকতে পারবে না — দুই ক্লাসের পর কমপক্ষে ১টি পিরিয়ড বা টিফিন থাকতে হবে।
+            </div>
+            {!isStudent && (
+              <button
+                type="button"
+                className="btn btn-brand btn-sm"
+                onClick={runAutoCoordinateStreaks}
+              >
+                অন্য শিক্ষকের সাথে অটো-সমন্বয় করুন
+              </button>
+            )}
+          </div>
+          <div style={{ display: "grid", gap: 6, marginTop: 8 }}>
+            {unapprovedStreakRuns.map((run, idx) => {
+              const t = teacherById.get(run.teacherId);
+              return (
+                <div key={`${run.day}|${run.teacherId}|${idx}`} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap", padding: "6px 10px", borderRadius: 8, background: "rgba(255,255,255,.55)", border: "1px solid rgba(217,119,6,.3)" }}>
+                  <span style={{ fontSize: "12.5px" }}>
+                    <b>{t ? t.name : run.teacherId}</b> · {run.day} · বিরতিহীন{" "}
+                    <b className="tabular-nums">{toBnStr(run.periods.length)} ক্লাস</b> (
+                    {run.periods.map(pNum => ordinalPeriodBn(pNum)).join(", ")})
+                  </span>
+                  {!isStudent && canApproveConsecutive && (
+                    <button
+                      type="button"
+                      className="mini-btn"
+                      style={{ minHeight: 30, background: "var(--accent)", color: "#fff", borderColor: "var(--accent)" }}
+                      onClick={() => approveStreakRun(run)}
+                    >
+                      অ্যাডমিন অনুমোদন দিন
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {approvedStreakRuns.length > 0 && unapprovedStreakRuns.length === 0 && (
+        <div className="routine-streak-banner approved">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span>
+              <b>অ্যাডমিন অনুমোদিত ব্যতিক্রম ({toBnStr(approvedStreakRuns.length)}টি):</b>{" "}
+              {approvedStreakRuns.map((r, idx) => {
+                const t = teacherById.get(r.teacherId);
+                return `${idx > 0 ? ", " : ""}${t ? t.name : r.teacherId} (${r.day}: ${r.periods.map(pN => ordinalPeriodBn(pN)).join("+")})`;
+              }).join("")}
+            </span>
+            {!isStudent && canApproveConsecutive && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {approvedStreakRuns.map((r, idx) => {
+                  const t = teacherById.get(r.teacherId);
+                  return (
+                    <button
+                      key={`rev-${idx}`}
+                      type="button"
+                      className="mini-btn"
+                      style={{ minHeight: 28, fontSize: "12px" }}
+                      onClick={() => revokeStreakApproval(r)}
+                    >
+                      অনুমোদন প্রত্যাহার ({t ? t.name : ""})
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -1523,6 +1894,8 @@ export default function RoutineModule({
 
                               const entry = (routine.entries || {})[cellSlotKey(day, secMeta.secKey, p)];
                               const cellSpan = entry ? effectiveSpan[p] || 1 : 1;
+                              const ownerKey = cellSlotKey(day, secMeta.secKey, p);
+                              const streakSt = entry ? cellStreakStatus[ownerKey] : null;
 
                               // Check if any item in this cell has a teacher clash within p..p+cellSpan-1
                               let cellHasClash = false;
@@ -1557,7 +1930,9 @@ export default function RoutineModule({
                                     isSplit ? "split" : "",
                                     isCommon ? "common" : "",
                                     isMerged ? "merged" : "",
-                                    cellHasClash ? "clash" : ""
+                                    cellHasClash ? "clash" : "",
+                                    streakSt === "unapproved" ? "streak-warn" : "",
+                                    streakSt === "approved" ? "streak-approved" : ""
                                   ].filter(Boolean).join(" ")}
                                   onClick={() => {
                                     if (!isStudent) setSlotModal({ day, secKey: secMeta.secKey, period: p });
@@ -1582,6 +1957,8 @@ export default function RoutineModule({
                                           <span className="routine-tag split">বিভক্ত ({toBnStr(entry.items.length)} গ্রুপ)</span>
                                         )}
                                         {cellHasClash && <span className="routine-tag clash">সংঘর্ষ!</span>}
+                                        {streakSt === "unapproved" && <span className="routine-tag streak-warn">টানা ৩+ ক্লাস!</span>}
+                                        {streakSt === "approved" && <span className="routine-tag streak-approved">অ্যাডমিন অনুমোদিত (৩+)</span>}
                                       </div>
 
                                       <div className="routine-items-list">
@@ -1750,6 +2127,12 @@ export default function RoutineModule({
                                   );
                                 }
 
+                                const dayTeacherRuns = streakInfo.violations[`${day}|${t.id}`] || [];
+                                const matchingRun = dayTeacherRuns.find(r =>
+                                  r.periods.some(rp => rp >= p && rp < p + cell.span)
+                                );
+                                const tStreakSt = matchingRun ? (matchingRun.approved ? "approved" : "unapproved") : null;
+
                                 return (
                                   <td
                                     key={`tp-${p}`}
@@ -1758,13 +2141,17 @@ export default function RoutineModule({
                                       "routine-cell",
                                       cell.span > 1 ? "merged" : "",
                                       cell.hasClash ? "clash" : "",
-                                      cell.blocks.some(b => b.commonId) ? "common" : ""
+                                      cell.blocks.some(b => b.commonId) ? "common" : "",
+                                      tStreakSt === "unapproved" ? "streak-warn" : "",
+                                      tStreakSt === "approved" ? "streak-approved" : ""
                                     ].filter(Boolean).join(" ")}
                                   >
                                     <div className="routine-cell-inner">
-                                      {cell.span > 1 && (
+                                      {(cell.span > 1 || tStreakSt) && (
                                         <div className="routine-cell-tags">
-                                          <span className="routine-tag merged">{toBnStr(cell.span)} পিরিয়ড মার্জ</span>
+                                          {cell.span > 1 && <span className="routine-tag merged">{toBnStr(cell.span)} পিরিয়ড মার্জ</span>}
+                                          {tStreakSt === "unapproved" && <span className="routine-tag streak-warn">টানা ৩+ ক্লাস!</span>}
+                                          {tStreakSt === "approved" && <span className="routine-tag streak-approved">অ্যাডমিন অনুমোদিত</span>}
                                         </div>
                                       )}
                                       {cell.blocks.map((blk, bIdx) => {
@@ -1912,6 +2299,8 @@ export default function RoutineModule({
                                 if (coveredBy[p]) return null;
                                 const entry = (routine.entries || {})[cellSlotKey(day, secMeta.secKey, p)];
                                 const cellSpan = entry ? effectiveSpan[p] || 1 : 1;
+                                const ownerKey = cellSlotKey(day, secMeta.secKey, p);
+                                const cStreakSt = entry ? cellStreakStatus[ownerKey] : null;
                                 const isSplit = entry && entry.items.length > 1;
                                 const isCommon = entry && Boolean(entry.commonId);
                                 const commonLabels = isCommon
@@ -1931,7 +2320,9 @@ export default function RoutineModule({
                                       !entry ? "empty-cell" : "",
                                       isSplit ? "split" : "",
                                       isCommon ? "common" : "",
-                                      cellSpan > 1 ? "merged" : ""
+                                      cellSpan > 1 ? "merged" : "",
+                                      cStreakSt === "unapproved" ? "streak-warn" : "",
+                                      cStreakSt === "approved" ? "streak-approved" : ""
                                     ].filter(Boolean).join(" ")}
                                     onClick={() => {
                                       if (!isStudent) setSlotModal({ day, secKey: secMeta.secKey, period: p });
@@ -1941,11 +2332,13 @@ export default function RoutineModule({
                                       <span className="routine-empty-hint">{isStudent ? "—" : "+ যুক্ত"}</span>
                                     ) : (
                                       <div className="routine-cell-inner">
-                                        {(isCommon || cellSpan > 1 || isSplit) && (
+                                        {(isCommon || cellSpan > 1 || isSplit || cStreakSt) && (
                                           <div className="routine-cell-tags">
                                             {isCommon && <span className="routine-tag common">কমন: {commonLabels.join(" + ")}</span>}
                                             {cellSpan > 1 && <span className="routine-tag merged">{toBnStr(cellSpan)} পিরিয়ড একত্রে</span>}
                                             {isSplit && <span className="routine-tag split">বিভক্ত ক্লাস</span>}
+                                            {cStreakSt === "unapproved" && <span className="routine-tag streak-warn">টানা ৩+ ক্লাস!</span>}
+                                            {cStreakSt === "approved" && <span className="routine-tag streak-approved">অ্যাডমিন অনুমোদিত</span>}
                                           </div>
                                         )}
                                         <div className="routine-items-list">
@@ -1987,9 +2380,12 @@ export default function RoutineModule({
           routine={routine}
           timeline={timeline}
           allSectionsMeta={allSectionsMeta}
+          allSectionKeys={allSectionKeys}
           teachers={teachers}
           allSubjectNames={allSchoolSubjectNames}
           normalizeSectionSubjects={normalizeSectionSubjects}
+          teacherCoversSubject={teacherCoversSubject}
+          canApproveConsecutive={canApproveConsecutive}
           onSave={saveRoutineSlot}
           onDelete={deleteRoutineSlot}
           onClose={() => setSlotModal(null)}

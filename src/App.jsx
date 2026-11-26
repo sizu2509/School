@@ -3727,6 +3727,7 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
             data={data}
             setData={setData}
             isStudent={isStudent}
+            canApproveConsecutive={Boolean(isMaster || (user && (user.role === "master" || user.role === "admin")))}
             settings={S}
             allSchoolSubjectNames={allSchoolSubjectNames}
             normalizeClassSections={normalizeClassSections}
