@@ -49,6 +49,54 @@ export function cellSlotKey(day, secKey, period) {
   return `${day}|${secKey}|${Number(period) || 1}`;
 }
 
+export function parseAssignmentSubjects(assignment) {
+  if (!assignment) return [];
+  if (Array.isArray(assignment.subjects) && assignment.subjects.length > 0) {
+    return Array.from(new Set(assignment.subjects.map(s => String(s || "").trim()).filter(Boolean)));
+  }
+  return Array.from(
+    new Set(
+      String(assignment.subject || "")
+        .split(/[,;\n]+/)
+        .map(s => s.trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+export function getTeacherClassAssignmentsMap(teacher, validClassNames) {
+  const map = new Map();
+  if (!teacher || !Array.isArray(teacher.teachingAssignments)) return map;
+  const validSet = Array.isArray(validClassNames) && validClassNames.length ? new Set(validClassNames) : null;
+  teacher.teachingAssignments.forEach(a => {
+    if (!a || !a.cls) return;
+    const clsName = String(a.cls).trim();
+    if (!clsName || (validSet && !validSet.has(clsName))) return;
+    const subs = parseAssignmentSubjects(a);
+    const prev = map.get(clsName) || { section: a.section || "সব শাখা", subjects: [] };
+    map.set(clsName, {
+      section: a.section || prev.section || "সব শাখা",
+      subjects: Array.from(new Set([...prev.subjects, ...subs]))
+    });
+  });
+  return map;
+}
+
+export function teacherCoversClassSubject(teacher, clsName, subjectName) {
+  if (!teacher || !clsName || !subjectName) return false;
+  const assignments = Array.isArray(teacher.teachingAssignments) ? teacher.teachingAssignments : [];
+  const exactRows = assignments.filter(a => a && String(a.cls || "").trim() === String(clsName).trim());
+  if (exactRows.length === 0) return false;
+  const sub = String(subjectName).trim().toLowerCase();
+  const hay = exactRows.flatMap(parseAssignmentSubjects).join(" | ").toLowerCase();
+  if (!hay) return false;
+  if (hay.includes(sub)) return true;
+  const keywords = sub.replace(/[()]/g, " ").split(/[\s,/—-]+/).filter(w => w.length >= 3);
+  return keywords.some(
+    k => !["এবং", "ও", "পত্র", "শ্রেণি", "প্রাথমিক", "সাধারণ", "বই", "for", "today", "1st", "2nd", "paper", "and"].includes(k) && hay.includes(k)
+  );
+}
+
 export function parseTimeMinutes(hhmm) {
   const m = String(hhmm || "09:00").trim().match(/^(\d{1,2}):(\d{2})$/);
   if (!m) return 9 * 60;
@@ -728,6 +776,11 @@ export function generateSmartMasterRoutine({
       isTeacherFree(day, startP, span, t.id) &&
       (allowStreak || !wouldMakeThreeConsecutive(day, startP, span, t.id));
 
+    const tier0 = normTeachers.find(
+      t => safeCheck(t) && teacherCoversClassSubject(t, clsName, subName)
+    );
+    if (tier0) return tier0;
+
     const tier1 = normTeachers.find(
       t => safeCheck(t) && teacherCoversSubject(t, subName) && (t.teachingClasses || []).includes(clsName)
     );
@@ -1075,6 +1128,8 @@ export function autoCoordinateRoutineViolations({
           };
 
           const altTeacher =
+            (meta && normTeachers.find(t => t.id !== teacherId && teacherCoversClassSubject(t, meta.clsName, item.subject) && busyCheck(t.id))) ||
+            normTeachers.find(t => t.id !== teacherId && teacherCoversSubject(t, item.subject) && meta && (t.teachingClasses || []).includes(meta.clsName) && busyCheck(t.id)) ||
             normTeachers.find(t => t.id !== teacherId && teacherCoversSubject(t, item.subject) && busyCheck(t.id)) ||
             normTeachers.find(t => t.id !== teacherId && meta && (t.teachingClasses || []).includes(meta.clsName) && busyCheck(t.id)) ||
             normTeachers.find(t => t.id !== teacherId && busyCheck(t.id));

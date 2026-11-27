@@ -21,7 +21,9 @@ import {
   deriveTeacherDayRow,
   generateSmartMasterRoutine,
   autoCoordinateRoutineViolations,
-  buildTeacherShortCodeMap
+  buildTeacherShortCodeMap,
+  getTeacherClassAssignmentsMap,
+  teacherCoversClassSubject
 } from "./routineUtils.js";
 
 function escapeHtml(v) {
@@ -54,6 +56,399 @@ function slotFreeStatusForTeacher(entries, day, period, span, teacherId, ignoreS
     }
   });
   return { free: busyAt.length === 0, busyAt: Array.from(new Set(busyAt)) };
+}
+
+function ClassSubjectAssignModal({
+  teacher,
+  classes,
+  allSchoolSubjectNames,
+  normalizeClassSections,
+  normalizeSectionSubjects,
+  initialFocusClass,
+  weeklyPeriods = 0,
+  onSave,
+  onClose
+}) {
+  const schoolClassNames = useMemo(
+    () => (classes || []).map(c => c.name).filter(Boolean),
+    [classes]
+  );
+
+  const initialState = useMemo(() => {
+    const existingMap = getTeacherClassAssignmentsMap(teacher, schoolClassNames);
+    const baseClasses = (teacher.teachingClasses || []).filter(c => schoolClassNames.includes(c));
+    const initClasses = Array.from(
+      new Set([
+        ...baseClasses,
+        ...Array.from(existingMap.keys()),
+        ...(initialFocusClass && schoolClassNames.includes(initialFocusClass) ? [initialFocusClass] : [])
+      ])
+    );
+    const orderedClasses = schoolClassNames.filter(c => initClasses.includes(c));
+    const subMap = {};
+    const secMap = {};
+    orderedClasses.forEach(cls => {
+      const ex = existingMap.get(cls);
+      subMap[cls] = ex ? [...ex.subjects] : [];
+      secMap[cls] = ex && ex.section ? ex.section : "সব শাখা";
+    });
+    const focus =
+      (initialFocusClass && orderedClasses.includes(initialFocusClass) && initialFocusClass) ||
+      orderedClasses[0] ||
+      schoolClassNames[0] ||
+      "";
+    return { orderedClasses, subMap, secMap, focus };
+  }, [teacher, schoolClassNames, initialFocusClass]);
+
+  const [selectedClasses, setSelectedClasses] = useState(initialState.orderedClasses);
+  const [classSubjectsMap, setClassSubjectsMap] = useState(initialState.subMap);
+  const [classSectionMap, setClassSectionMap] = useState(initialState.secMap);
+  const [activeClass, setActiveClass] = useState(initialState.focus);
+  const [subSearchQ, setSubSearchQ] = useState("");
+  const [showAllSchoolSubs, setShowAllSchoolSubs] = useState(false);
+  const [customSubInput, setCustomSubInput] = useState("");
+
+  useEffect(() => {
+    setSelectedClasses(initialState.orderedClasses);
+    setClassSubjectsMap(initialState.subMap);
+    setClassSectionMap(initialState.secMap);
+    setActiveClass(initialState.focus);
+    setSubSearchQ("");
+    setCustomSubInput("");
+  }, [initialState]);
+
+  const selectOrFocusClass = clsName => {
+    if (!selectedClasses.includes(clsName)) {
+      const nextSet = new Set([...selectedClasses, clsName]);
+      setSelectedClasses(schoolClassNames.filter(c => nextSet.has(c)));
+      setClassSubjectsMap(prev => (prev[clsName] ? prev : { ...prev, [clsName]: [] }));
+      setClassSectionMap(prev => (prev[clsName] ? prev : { ...prev, [clsName]: "সব শাখা" }));
+    }
+    setActiveClass(clsName);
+  };
+
+  const removeSelectedClass = clsName => {
+    const nextList = selectedClasses.filter(c => c !== clsName);
+    setSelectedClasses(nextList);
+    if (activeClass === clsName) {
+      setActiveClass(nextList[0] || "");
+    }
+  };
+
+  const activeClsObj = useMemo(
+    () => (classes || []).find(c => c.name === activeClass) || null,
+    [classes, activeClass]
+  );
+
+  const activeClassSections = useMemo(() => {
+    if (!activeClsObj) return [];
+    return normalizeClassSections(activeClsObj).map(s => s.name);
+  }, [activeClsObj, normalizeClassSections]);
+
+  const activeClassNativeSubjects = useMemo(() => {
+    if (!activeClsObj) return [];
+    const seen = new Set();
+    const out = [];
+    normalizeClassSections(activeClsObj).forEach(sec => {
+      normalizeSectionSubjects(activeClsObj, sec, []).forEach(sb => {
+        const nm = String(sb && sb.name ? sb.name : sb || "").trim();
+        if (nm && !seen.has(nm)) {
+          seen.add(nm);
+          out.push(nm);
+        }
+      });
+    });
+    return out;
+  }, [activeClsObj, normalizeClassSections, normalizeSectionSubjects]);
+
+  const teacherCoreSubjects = useMemo(() => {
+    return Array.from(
+      new Set([teacher.subject, ...(teacher.additionalSubjects || [])].map(s => String(s || "").trim()).filter(Boolean))
+    );
+  }, [teacher.subject, teacher.additionalSubjects]);
+
+  const activeSelectedSubs = useMemo(
+    () => (activeClass ? classSubjectsMap[activeClass] || [] : []),
+    [classSubjectsMap, activeClass]
+  );
+
+  const candidateSubjects = useMemo(() => {
+    const combined = showAllSchoolSubs
+      ? [...activeClassNativeSubjects, ...teacherCoreSubjects, ...(allSchoolSubjectNames || []), ...activeSelectedSubs]
+      : [...activeClassNativeSubjects, ...teacherCoreSubjects, ...activeSelectedSubs];
+    const uniq = Array.from(new Set(combined.map(s => String(s || "").trim()).filter(Boolean)));
+    const q = subSearchQ.trim().toLowerCase();
+    if (!q) return uniq;
+    return uniq.filter(s => s.toLowerCase().includes(q));
+  }, [showAllSchoolSubs, activeClassNativeSubjects, teacherCoreSubjects, allSchoolSubjectNames, activeSelectedSubs, subSearchQ]);
+
+  const toggleSubjectForActiveClass = subName => {
+    if (!activeClass) return;
+    if (!selectedClasses.includes(activeClass)) {
+      selectOrFocusClass(activeClass);
+    }
+    setClassSubjectsMap(prev => {
+      const cur = prev[activeClass] || [];
+      const next = cur.includes(subName) ? cur.filter(s => s !== subName) : [...cur, subName];
+      return { ...prev, [activeClass]: next };
+    });
+  };
+
+  const addCustomSubjectToActiveClass = () => {
+    const clean = customSubInput.trim();
+    if (!clean || !activeClass) return;
+    if (!selectedClasses.includes(activeClass)) {
+      selectOrFocusClass(activeClass);
+    }
+    setClassSubjectsMap(prev => {
+      const cur = prev[activeClass] || [];
+      if (cur.includes(clean)) return prev;
+      return { ...prev, [activeClass]: [...cur, clean] };
+    });
+    setCustomSubInput("");
+  };
+
+  const addTeacherDefaultsToActiveClass = () => {
+    if (!activeClass) return;
+    if (!selectedClasses.includes(activeClass)) {
+      selectOrFocusClass(activeClass);
+    }
+    setClassSubjectsMap(prev => ({
+      ...prev,
+      [activeClass]: Array.from(new Set([...(prev[activeClass] || []), ...teacherCoreSubjects]))
+    }));
+  };
+
+  const handleSave = e => {
+    e.preventDefault();
+    const ordered = schoolClassNames.filter(c => selectedClasses.includes(c));
+    onSave({
+      teacherId: teacher.id,
+      teachingClasses: ordered,
+      assignments: ordered.map(cls => {
+        const subs = Array.from(new Set((classSubjectsMap[cls] || []).map(s => s.trim()).filter(Boolean)));
+        return {
+          cls,
+          section: classSectionMap[cls] || "সব শাখা",
+          subject: subs.join(", "),
+          subjects: subs
+        };
+      })
+    });
+  };
+
+  return (
+    <div className="modal-bg" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <form className="modal xl" onSubmit={handleSave}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
+          <div>
+            <h2>বরাদ্দকৃত শ্রেণি ও শ্রেণিভিত্তিক বিষয় নির্ধারণ</h2>
+            <p className="sub tabular-nums" style={{ marginBottom: 8 }}>
+              {teacher.name} ({teacher.teacherCode}) · প্রধান বিষয়: <b>{teacher.subject}</b> · সাপ্তাহিক ক্লাস: <b>{toBnStr(weeklyPeriods)}টি</b>
+            </p>
+          </div>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>বন্ধ করুন</button>
+        </div>
+
+        {/* ধাপ ১: শ্রেণি নির্বাচন */}
+        <div className="routine-modal-box" style={{ marginTop: 4 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+            <label style={{ margin: 0 }}>
+              ধাপ ১ — বরাদ্দকৃত শ্রেণি নির্বাচন করুন ({toBnStr(selectedClasses.length)}টি শ্রেণি নির্বাচিত)
+            </label>
+            <span style={{ fontSize: "12px", color: "var(--muted)" }}>
+              যেকোনো শ্রেণিতে ক্লিক করে সেটি নির্বাচন করুন ও নিচে ওই শ্রেণির বিষয় বরাদ্দ করুন
+            </span>
+          </div>
+          <div className="class-chip-grid">
+            {schoolClassNames.map(clsName => {
+              const isSelected = selectedClasses.includes(clsName);
+              const isFocused = activeClass === clsName;
+              const subCnt = (classSubjectsMap[clsName] || []).length;
+              return (
+                <div key={clsName} style={{ display: "inline-flex", alignItems: "stretch" }}>
+                  <button
+                    type="button"
+                    className={`class-chip-btn ${isSelected ? "on" : ""}`}
+                    style={{
+                      borderTopRightRadius: isSelected ? 0 : 8,
+                      borderBottomRightRadius: isSelected ? 0 : 8,
+                      boxShadow: isFocused ? "0 0 0 2px var(--accent)" : undefined
+                    }}
+                    onClick={() => selectOrFocusClass(clsName)}
+                  >
+                    {isSelected ? "✓ " : "+ "}
+                    {clsName}
+                    {isSelected && subCnt > 0 ? ` (${toBnStr(subCnt)})` : ""}
+                  </button>
+                  {isSelected && (
+                    <button
+                      type="button"
+                      aria-label={`${clsName} শ্রেণি সরান`}
+                      title={`${clsName} শ্রেণি সরান`}
+                      onClick={() => removeSelectedClass(clsName)}
+                      style={{
+                        minHeight: 34,
+                        padding: "0 8px",
+                        border: "1px solid var(--brand)",
+                        borderLeft: "1px solid rgba(255,255,255,.35)",
+                        borderRadius: "0 8px 8px 0",
+                        background: "var(--brand)",
+                        color: "#fff",
+                        fontWeight: 700,
+                        fontSize: "13px"
+                      }}
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* ধাপ ২: নির্বাচিত শ্রেণির জন্য বিষয় বরাদ্দ */}
+        <div className="routine-modal-box">
+          {!activeClass || !selectedClasses.includes(activeClass) ? (
+            <div style={{ textAlign: "center", padding: "14px 8px", color: "var(--muted)", fontSize: "13.5px" }}>
+              উপরের ধাপ ১ থেকে একটি শ্রেণিতে ক্লিক করুন — এরপর সেই শ্রেণির বিষয়সমূহ নির্বাচন করতে পারবেন।
+            </div>
+          ) : (
+            <div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+                <div>
+                  <label style={{ margin: 0, fontSize: "14px", color: "var(--brand)" }}>
+                    ধাপ ২ — "{activeClass}" শ্রেণির জন্য বিষয় বরাদ্দ করুন ({toBnStr(activeSelectedSubs.length)}টি নির্বাচিত)
+                  </label>
+                  <div style={{ fontSize: "12px", color: "var(--muted)" }}>
+                    {activeClass} শ্রেণির পাঠ্যবই ও বিষয় তালিকা থেকে ক্লিক করে নির্বাচন করুন
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                  <select
+                    aria-label={`${activeClass}-এর শাখা`}
+                    style={{ width: "auto", minHeight: 34, padding: "4px 8px", fontSize: "12.5px" }}
+                    value={classSectionMap[activeClass] || "সব শাখা"}
+                    onChange={e => setClassSectionMap(prev => ({ ...prev, [activeClass]: e.target.value }))}
+                  >
+                    <option value="সব শাখা">সব শাখা</option>
+                    {activeClassSections.map(sec => (
+                      <option key={sec} value={sec}>{sec} শাখা</option>
+                    ))}
+                  </select>
+                  <button type="button" className="mini-btn" onClick={addTeacherDefaultsToActiveClass}>
+                    + শিক্ষকের নিজের বিষয়
+                  </button>
+                  <button
+                    type="button"
+                    className="mini-btn"
+                    onClick={() => setClassSubjectsMap(prev => ({ ...prev, [activeClass]: [] }))}
+                  >
+                    খালি করুন
+                  </button>
+                  <button type="button" className="mini-btn red" onClick={() => removeSelectedClass(activeClass)}>
+                    শ্রেণি বাদ দিন
+                  </button>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
+                <input
+                  type="search"
+                  style={{ flex: "1 1 200px", minHeight: 36 }}
+                  value={subSearchQ}
+                  onChange={e => setSubSearchQ(e.target.value)}
+                  placeholder="বিষয় খুঁজুন…"
+                />
+                <div style={{ display: "flex", gap: 6, flex: "1 1 230px" }}>
+                  <input
+                    style={{ minHeight: 36 }}
+                    value={customSubInput}
+                    onChange={e => setCustomSubInput(e.target.value)}
+                    placeholder="তালিকায় না থাকলে বিষয় লিখুন…"
+                    onKeyDown={e => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        addCustomSubjectToActiveClass();
+                      }
+                    }}
+                  />
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={addCustomSubjectToActiveClass}>
+                    + যুক্ত
+                  </button>
+                </div>
+                <label style={{ display: "inline-flex", alignItems: "center", gap: 6, margin: 0, cursor: "pointer", fontSize: "12.5px" }}>
+                  <input
+                    type="checkbox"
+                    style={{ width: "auto", minHeight: "auto" }}
+                    checked={showAllSchoolSubs}
+                    onChange={e => setShowAllSchoolSubs(e.target.checked)}
+                  />
+                  অন্যান্য শ্রেণির বিষয়ও দেখান
+                </label>
+              </div>
+
+              <div className="subject-pick-grid">
+                {candidateSubjects.map(sb => {
+                  const on = activeSelectedSubs.includes(sb);
+                  return (
+                    <button
+                      key={sb}
+                      type="button"
+                      className={`class-chip-btn ${on ? "on" : ""}`}
+                      onClick={() => toggleSubjectForActiveClass(sb)}
+                    >
+                      {on ? `✓ ${sb}` : `+ ${sb}`}
+                    </button>
+                  );
+                })}
+                {candidateSubjects.length === 0 && (
+                  <span style={{ fontSize: "12.5px", color: "var(--muted)" }}>
+                    কোনো বিষয় পাওয়া যায়নি — উপরে লিখুন বা "অন্যান্য শ্রেণির বিষয়ও দেখান" টিক দিন।
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* সারসংক্ষেপ */}
+        {selectedClasses.length > 0 && (
+          <div style={{ marginTop: 10, padding: "10px 12px", borderRadius: 8, border: "1px solid var(--line)", background: "var(--surface)", fontSize: "12.5px", display: "grid", gap: 4 }}>
+            <b style={{ color: "var(--ink)" }}>নির্বাচিত শ্রেণি ও বিষয়ের সারসংক্ষেপ:</b>
+            {selectedClasses.map(cls => {
+              const subs = classSubjectsMap[cls] || [];
+              const secLabel = classSectionMap[cls] && classSectionMap[cls] !== "সব শাখা" ? ` (${classSectionMap[cls]})` : "";
+              return (
+                <div key={cls} style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "baseline" }}>
+                  <button
+                    type="button"
+                    onClick={() => setActiveClass(cls)}
+                    style={{ background: "none", border: "none", padding: 0, fontWeight: 700, color: "var(--brand)", textDecoration: "underline dotted" }}
+                  >
+                    {cls}{secLabel}:
+                  </button>
+                  <span style={{ color: subs.length ? "var(--ink2)" : "var(--muted)" }}>
+                    {subs.length ? subs.join(", ") : `বিষয় নির্ধারিত নয় (প্রধান বিষয়: ${teacher.subject})`}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 9, marginTop: 14, flexWrap: "wrap" }}>
+          <button type="submit" className="btn btn-brand" style={{ flex: 1 }}>
+            ✓ বরাদ্দকৃত শ্রেণি ও বিষয় সংরক্ষণ করুন
+          </button>
+          <button type="button" className="btn btn-ghost" onClick={onClose}>
+            বাতিল
+          </button>
+        </div>
+      </form>
+    </div>
+  );
 }
 
 function RoutineSlotModal({
@@ -302,6 +697,9 @@ function RoutineSlotModal({
 
     const match =
       (row.subject &&
+        curMeta &&
+        teachers.find(t => isSafe(t) && teacherCoversClassSubject(t, curMeta.clsName, row.subject))) ||
+      (row.subject &&
         teachers.find(
           t =>
             isSafe(t) &&
@@ -534,20 +932,33 @@ function RoutineSlotModal({
                       onChange={e => setItems(prev => prev.map((x, i) => i === idx ? { ...x, teacherId: e.target.value } : x))}
                     >
                       <option value="">— শিক্ষক নির্বাচন করুন —</option>
-                      {teachers.map(t => {
-                        const st = checkTeacherMultiDayFree(t.id);
-                        const sk = checkTeacherMultiDayStreak(t.id);
-                        const tagLabel = !st.free
-                          ? `⚠ ব্যস্ত: ${st.busyAt[0]}`
-                          : sk.violates
-                            ? `⚠ টানা ${toBnStr(sk.streakPeriods.length)} ক্লাস হবে`
-                            : "✓ নিরাপদ ও ফাঁকা";
-                        return (
-                          <option key={t.id} value={t.id}>
-                            {t.name} ({t.subject}) — {tagLabel}
-                          </option>
-                        );
-                      })}
+                      {teachers
+                        .slice()
+                        .sort((a, b) => {
+                          const aClsSub = curMeta && it.subject && teacherCoversClassSubject(a, curMeta.clsName, it.subject) ? 2 : 0;
+                          const bClsSub = curMeta && it.subject && teacherCoversClassSubject(b, curMeta.clsName, it.subject) ? 2 : 0;
+                          if (bClsSub !== aClsSub) return bClsSub - aClsSub;
+                          const aCls = curMeta && (a.teachingClasses || []).includes(curMeta.clsName) ? 1 : 0;
+                          const bCls = curMeta && (b.teachingClasses || []).includes(curMeta.clsName) ? 1 : 0;
+                          return bCls - aCls;
+                        })
+                        .map(t => {
+                          const st = checkTeacherMultiDayFree(t.id);
+                          const sk = checkTeacherMultiDayStreak(t.id);
+                          const hasExactAlloc = curMeta && it.subject && teacherCoversClassSubject(t, curMeta.clsName, it.subject);
+                          const tagLabel = !st.free
+                            ? `⚠ ব্যস্ত: ${st.busyAt[0]}`
+                            : sk.violates
+                              ? `⚠ টানা ${toBnStr(sk.streakPeriods.length)} ক্লাস হবে`
+                              : hasExactAlloc
+                                ? "★ শ্রেণি+বিষয় নির্ধারিত ও ফাঁকা"
+                                : "✓ নিরাপদ ও ফাঁকা";
+                          return (
+                            <option key={t.id} value={t.id}>
+                              {t.name} ({t.subject}) — {tagLabel}
+                            </option>
+                          );
+                        })}
                     </select>
                     {it.teacherId && !teacherStatus.free && (
                       <div style={{ fontSize: "11.5px", color: "var(--danger)", fontWeight: 700, marginTop: 3 }}>
@@ -843,6 +1254,7 @@ export default function RoutineModule({
   const [editCodeForTeacherId, setEditCodeForTeacherId] = useState(null);
   const [editCodeInput, setEditCodeInput] = useState("");
   const [confirmActionKey, setConfirmActionKey] = useState(null); // `clear:${tid}` | `del:${tid}`
+  const [classAssignModal, setClassAssignModal] = useState(null); // { teacherId, focusClassName? }
 
   // Slot Editor modal state
   const [slotModal, setSlotModal] = useState(null);
@@ -1142,6 +1554,28 @@ export default function RoutineModule({
     setEditCodeForTeacherId(null);
     setEditCodeInput("");
     toast(clean ? `শিক্ষকের শর্ট কোড "${clean}" সংরক্ষিত হয়েছে` : "শিক্ষকের স্বয়ংক্রিয় শর্ট কোড চালু হয়েছে");
+  };
+
+  const saveTeacherClassAssignments = ({ teacherId, teachingClasses, assignments }) => {
+    setData(prev => ({
+      ...prev,
+      teachers: (prev.teachers || []).map(rawT => {
+        if (rawT.id !== teacherId) return rawT;
+        const t = normalizeTeacherRecord(rawT, true);
+        const allAssignedSubs = Array.from(
+          new Set(assignments.flatMap(a => a.subjects || []).filter(s => s && s !== t.subject))
+        );
+        const nextAdditional = Array.from(new Set([...(t.additionalSubjects || []), ...allAssignedSubs]));
+        return {
+          ...t,
+          teachingClasses,
+          teachingAssignments: assignments,
+          additionalSubjects: nextAdditional
+        };
+      })
+    }));
+    setClassAssignModal(null);
+    toast(`শিক্ষকের বরাদ্দকৃত শ্রেণি (${toBnStr(teachingClasses.length)}টি) ও বিষয় সংরক্ষিত হয়েছে`);
   };
 
   const triggerPrintRoutine = () => {
@@ -1676,12 +2110,13 @@ export default function RoutineModule({
             </div>
           </div>
 
-          <div className="table-wrap" style={{ maxHeight: 360, overflowY: "auto" }}>
+          <div className="table-wrap" style={{ maxHeight: 410, overflowY: "auto" }}>
             <table>
               <thead>
                 <tr>
                   <th>শিক্ষক ও মোবাইল</th>
                   <th>শ্রেণি শিক্ষক</th>
+                  <th>বরাদ্দকৃত শ্রেণি</th>
                   <th>বরাদ্দকৃত বিষয়সমূহ</th>
                   <th style={{ textAlign: "center" }}>সাপ্তাহিক মোট ক্লাস</th>
                   <th style={{ textAlign: "right" }}>কার্যক্রম</th>
@@ -1690,7 +2125,7 @@ export default function RoutineModule({
               <tbody>
                 {filteredWorkloadTeachers.length === 0 && (
                   <tr>
-                    <td colSpan={5} style={{ textAlign: "center", color: "var(--muted)", padding: 18 }}>
+                    <td colSpan={6} style={{ textAlign: "center", color: "var(--muted)", padding: 18 }}>
                       কোনো শিক্ষক পাওয়া যায়নি।
                     </td>
                   </tr>
@@ -1701,6 +2136,10 @@ export default function RoutineModule({
                   const isAddingSub = subAddForTeacherId === t.id;
                   const delConfirm = confirmActionKey === `del:${t.id}`;
                   const clrConfirm = confirmActionKey === `clear:${t.id}`;
+                  const schoolClsNames = (data.classes || []).map(c => c.name);
+                  const perClassMap = getTeacherClassAssignmentsMap(t, schoolClsNames);
+                  const assignedClasses = Array.isArray(t.teachingClasses) ? t.teachingClasses : [];
+                  const perClassEntries = Array.from(perClassMap.entries()).filter(([, info]) => info.subjects.length > 0);
 
                   return (
                     <tr key={t.id}>
@@ -1713,7 +2152,7 @@ export default function RoutineModule({
                             <button
                               type="button"
                               onClick={() => onOpenTeacherProfile && onOpenTeacherProfile(t.id)}
-                              style={{ background: "none", border: "none", padding: 0, fontWeight: 700, color: "var(--brand-dark)", textAlign: "left", fontSize: "13.5px" }}
+                              style={{ background: "none", border: "none", padding: 0, fontWeight: 700, color: "var(--brand)", textAlign: "left", fontSize: "13.5px" }}
                               title="শিক্ষকের পূর্ণ প্রোফাইল দেখুন"
                             >
                               {t.name}
@@ -1742,7 +2181,7 @@ export default function RoutineModule({
                                 <button
                                   type="button"
                                   onClick={() => { setEditCodeForTeacherId(t.id); setEditCodeInput(t.shortCode || teacherShortCodeMap.get(t.id) || ""); }}
-                                  style={{ background: "none", border: "none", padding: 0, fontSize: "11.5px", fontWeight: 700, color: "var(--brand-dark)", textDecoration: "underline dotted" }}
+                                  style={{ background: "none", border: "none", padding: 0, fontSize: "11.5px", fontWeight: 700, color: "var(--brand)", textDecoration: "underline dotted" }}
                                   title="মাস্টার রুটিনে দেখানো শিক্ষকের শর্ট কোড পরিবর্তন করুন"
                                 >
                                   কোড: {teacherShortCodeMap.get(t.id) || "—"}
@@ -1777,6 +2216,35 @@ export default function RoutineModule({
                             </option>
                           ))}
                         </select>
+                      </td>
+
+                      <td>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center", minWidth: 165 }}>
+                          {assignedClasses.map(clsName => {
+                            const clsAssign = perClassMap.get(clsName);
+                            const subCount = clsAssign ? clsAssign.subjects.length : 0;
+                            return (
+                              <button
+                                key={clsName}
+                                type="button"
+                                className={`mini-btn tabular-nums ${subCount > 0 ? "active-chip" : ""}`}
+                                style={{ padding: "2px 7px", fontSize: "11.5px" }}
+                                title={`${clsName} শ্রেণির জন্য বিষয় বরাদ্দ করুন`}
+                                onClick={() => setClassAssignModal({ teacherId: t.id, focusClassName: clsName })}
+                              >
+                                {clsName}{subCount > 0 ? ` (${toBnStr(subCount)})` : ""}
+                              </button>
+                            );
+                          })}
+                          <button
+                            type="button"
+                            className="mini-btn"
+                            style={{ padding: "2px 7px", fontSize: "11.5px", borderStyle: "dashed", borderColor: "var(--brand)", color: "var(--brand)" }}
+                            onClick={() => setClassAssignModal({ teacherId: t.id, focusClassName: assignedClasses[0] || "" })}
+                          >
+                            + শ্রেণি ও বিষয়
+                          </button>
+                        </div>
                       </td>
 
                       <td>
@@ -1822,10 +2290,21 @@ export default function RoutineModule({
                             </button>
                           )}
                         </div>
+                        {perClassEntries.length > 0 && (
+                          <div style={{ marginTop: 4, fontSize: "11.5px", color: "var(--muted)", lineHeight: 1.4 }}>
+                            {perClassEntries.slice(0, 3).map(([clsN, info], i) => (
+                              <span key={clsN}>
+                                {i > 0 ? " · " : ""}
+                                <b style={{ color: "var(--ink2)" }}>{clsN}:</b> {info.subjects.join(", ")}
+                              </span>
+                            ))}
+                            {perClassEntries.length > 3 ? ` (+${toBnStr(perClassEntries.length - 3)} শ্রেণি)` : ""}
+                          </div>
+                        )}
                       </td>
 
                       <td style={{ textAlign: "center" }}>
-                        <div className="tabular-nums" style={{ fontSize: "16px", fontWeight: 800, color: st.weeklyPeriods > 0 ? "var(--brand-dark)" : "var(--muted)" }}>
+                        <div className="tabular-nums" style={{ fontSize: "16px", fontWeight: 800, color: st.weeklyPeriods > 0 ? "var(--brand)" : "var(--muted)" }}>
                           {toBnStr(st.weeklyPeriods)}টি ক্লাস
                         </div>
                         {(st.commonPeriods > 0 || st.splitPeriods > 0 || st.classesUsed.size > 0) && (
@@ -1842,7 +2321,7 @@ export default function RoutineModule({
                           <button
                             type="button"
                             className="mini-btn"
-                            style={{ background: "var(--brand-soft)", color: "var(--brand-dark)", borderColor: "var(--brand)" }}
+                            style={{ background: "var(--brand-soft)", color: "var(--brand)", borderColor: "var(--brand)" }}
                             onClick={() =>
                               setSlotModal({
                                 day: cfg.days[0] || "রবিবার",
@@ -2744,6 +3223,20 @@ export default function RoutineModule({
           onSave={saveRoutineSlot}
           onDelete={deleteRoutineSlot}
           onClose={() => setSlotModal(null)}
+        />
+      )}
+
+      {classAssignModal && teacherById.get(classAssignModal.teacherId) && (
+        <ClassSubjectAssignModal
+          teacher={teacherById.get(classAssignModal.teacherId)}
+          classes={data.classes || []}
+          allSchoolSubjectNames={allSchoolSubjectNames}
+          normalizeClassSections={normalizeClassSections}
+          normalizeSectionSubjects={normalizeSectionSubjects}
+          initialFocusClass={classAssignModal.focusClassName}
+          weeklyPeriods={(teacherStats[classAssignModal.teacherId] || { weeklyPeriods: 0 }).weeklyPeriods}
+          onSave={saveTeacherClassAssignments}
+          onClose={() => setClassAssignModal(null)}
         />
       )}
     </div>

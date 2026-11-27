@@ -5144,15 +5144,27 @@ function TeacherProfileModal({ teacher, settings, classes, allTeachers, allSubje
     const cleanPrimary = primarySub.trim() || teacher.subject || "সাধারণ";
     const cleanExtras = Array.from(new Set(extraSubs.map(s => String(s || "").trim()).filter(s => s && s !== cleanPrimary)));
     const nextTeachClasses = ctCls && !teachClasses.includes(ctCls) ? [...teachClasses, ctCls] : teachClasses;
+    const prevAssignments = Array.isArray(teacher.teachingAssignments) ? teacher.teachingAssignments : [];
+    const fallbackSubStr = cleanExtras.length ? `${cleanPrimary}, ${cleanExtras.join(", ")}` : cleanPrimary;
     onUpdateTeacher({
       subject: cleanPrimary,
       additionalSubjects: cleanExtras,
       teachingClasses: nextTeachClasses.length ? nextTeachClasses : ["ষষ্ঠ"],
-      teachingAssignments: (nextTeachClasses.length ? nextTeachClasses : ["ষষ্ঠ"]).map(cls => ({
-        cls,
-        section: ctCls === cls ? (ctSec || ctSecOpts[0] || "ক") : "সব শাখা",
-        subject: cleanExtras.length ? `${cleanPrimary}, ${cleanExtras.join(", ")}` : cleanPrimary
-      }))
+      teachingAssignments: (nextTeachClasses.length ? nextTeachClasses : ["ষষ্ঠ"]).map(cls => {
+        const existing = prevAssignments.find(a => a && a.cls === cls);
+        if (existing && (Array.isArray(existing.subjects) || existing.subject)) {
+          return {
+            ...existing,
+            cls,
+            section: ctCls === cls ? (ctSec || ctSecOpts[0] || "ক") : (existing.section || "সব শাখা")
+          };
+        }
+        return {
+          cls,
+          section: ctCls === cls ? (ctSec || ctSecOpts[0] || "ক") : "সব শাখা",
+          subject: fallbackSubStr
+        };
+      })
     });
     if (ctCls) {
       if (onAssignClassTeacher) onAssignClassTeacher(teacher.id, ctCls, ctSec || ctSecOpts[0] || "ক");
