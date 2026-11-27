@@ -2195,8 +2195,22 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
   const [qrAutoScanPayload, setQrAutoScanPayload] = useState(null);
   const [historyStudentId, setHistoryStudentId] = useState(null);
   const [idCardStudentId, setIdCardStudentId] = useState(null);
+  const [resExamType, setResExamType] = useState("main");
+  const [resClass, setResClass] = useState("");
+  const [resSection, setResSection] = useState("");
   const [resStudent, setResStudent] = useState("");
+  const [resSheetCls, setResSheetCls] = useState("সব");
+  const [resSheetSec, setResSheetSec] = useState("সব");
+  const [resSheetQ, setResSheetQ] = useState("");
+  const [viewResultStudentId, setViewResultStudentId] = useState(null);
+  const [viewResultMode, setViewResultMode] = useState("main");
   const [marks, setMarks] = useState({});
+  const [mainDefaultMax, setMainDefaultMax] = useState("100");
+  const [mainSubMax, setMainSubMax] = useState({});
+  const [ctMaxMark, setCtMaxMark] = useState("20");
+  const [ctTitle, setCtTitle] = useState("");
+  const [ctMarks, setCtMarks] = useState({});
+  const [ctSubMax, setCtSubMax] = useState({});
   const [payFor, setPayFor] = useState(null);
   const [payAmt, setPayAmt] = useState("");
   const [loanForm, setLoanForm] = useState(false);
@@ -2455,23 +2469,439 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
   const attHistory = Object.keys(data.attendance).sort().reverse();
 
   /* ----- ফলাফল ----- */
-  const resOf = sid => data.results[sid];
-  const gpaOf = sid => {
-    const r = resOf(sid); if (!r) return null;
-    const gs = SUBJECTS.map(sub => gradeOf(+r[sub] || 0));
-    if (gs.some(g => g.gpa === 0)) return { gpa: 0, grade: "F" };
-    return { gpa: Math.round(gs.reduce((a, g) => a + g.gpa, 0) / gs.length * 100) / 100, grade: gs[0].grade };
+  const letterGradeFromGpa = g => {
+    if (g >= 5) return "A+";
+    if (g >= 4) return "A";
+    if (g >= 3.5) return "A-";
+    if (g >= 3) return "B";
+    if (g >= 2) return "C";
+    if (g >= 1) return "D";
+    return "F";
   };
-  const openMarks = sid => { setResStudent(sid); setMarks(resOf(sid) || {}); };
-  const saveMarks = () => { patch({ results: { ...data.results, [resStudent]: marks } }); toast("নম্বর সংরক্ষিত হয়েছে"); };
-  const downloadResult = st => {
-    const r = resOf(st.id) || {}; const g = gpaOf(st.id);
-    const rows = SUBJECTS.map(sub => { const m = +r[sub] || 0; const gr = gradeOf(m); return "<tr><td>" + sub + "</td><td>" + m + "</td><td>" + gr.grade + "</td><td>" + gr.gpa.toFixed(1) + "</td></tr>"; }).join("");
-    const html = "<!doctype html><html lang='bn'><head><meta charset='utf-8'><title>ফলাফল শিট</title><style>body{font-family:sans-serif;padding:30px;color:#222}table{border-collapse:collapse;width:100%}td,th{border:1px solid #999;padding:8px}h1{text-align:center;margin-bottom:2px}p{text-align:center}</style></head><body><h1>" + S.name + "</h1><p>" + S.motto + "</p><h3>ফলাফল শিট</h3><p style='text-align:left'>নাম: <b>" + st.name + "</b> · শ্রেণি: " + st.cls + " · রোল: " + st.roll + " · শাখা: " + (st.section || "ক") + "</p><table><tr><th>বিষয়</th><th>নম্বর</th><th>গ্রেড</th><th>জিপি</th></tr>" + rows + "</table><p style='text-align:left'><b>মোট GPA: " + (g ? g.gpa.toFixed(2) : "—") + "</b></p></body></html>";
+  const resOf = sid => data.results[sid];
+  const effectiveMainDefaultMax = Math.max(1, Math.min(1000, Number(mainDefaultMax) || 100));
+  const resEntriesOf = sid => {
+    const r = resOf(sid);
+    if (!r || typeof r !== "object") return [];
+    const subMaxMap = (r.__subMax && typeof r.__subMax === "object") ? r.__subMax : {};
+    const defMax = Math.max(1, Number(r.__mainMax) || 100);
+    return Object.entries(r)
+      .filter(([sub, val]) => Boolean(String(sub || "").trim()) && !String(sub).startsWith("__") && val !== "" && val !== null && val !== undefined && !Number.isNaN(Number(val)))
+      .map(([sub, val]) => {
+        const subMax = Math.max(1, Number(subMaxMap[sub]) || defMax);
+        const num = Math.max(0, Math.min(subMax, Number(val)));
+        const pct = subMax > 0 ? Math.min(100, (num / subMax) * 100) : 0;
+        return { subject: sub, marks: num, maxMark: subMax, pct: Math.round(pct), ...gradeOf(pct) };
+      });
+  };
+  const gpaOf = sid => {
+    const r = resOf(sid);
+    const items = resEntriesOf(sid);
+    if (items.length === 0) return null;
+    const totalMarks = items.reduce((s, it) => s + it.marks, 0);
+    const maxMarks = items.reduce((s, it) => s + it.maxMark, 0);
+    const pct = maxMarks > 0 ? Math.round((totalMarks / maxMarks) * 100) : 0;
+    const defMax = Math.max(1, Number(r && r.__mainMax) || 100);
+    if (items.some(g => g.gpa === 0)) {
+      return { gpa: 0, grade: "F", totalMarks, maxMarks, pct, subjectCount: items.length, maxMark: defMax, items };
+    }
+    const avg = Math.round((items.reduce((a, g) => a + g.gpa, 0) / items.length) * 100) / 100;
+    return { gpa: avg, grade: letterGradeFromGpa(avg), totalMarks, maxMarks, pct, subjectCount: items.length, maxMark: defMax, items };
+  };
+
+  /* ----- শ্রেণি পরীক্ষা (২০ বা কাস্টম নম্বর, বিষয়ভিত্তিক কাস্টম পূর্ণমানসহ) ----- */
+  const effectiveCtMax = Math.max(1, Math.min(1000, Number(ctMaxMark) || 20));
+  const ctKeyOf = sid => "ct|" + sid;
+  const ctResOf = sid => {
+    const mainRow = data.results[sid];
+    if (mainRow && typeof mainRow === "object" && mainRow.__ct && typeof mainRow.__ct === "object") {
+      return mainRow.__ct;
+    }
+    return data.results[ctKeyOf(sid)] || null;
+  };
+  const ctEntriesOf = sid => {
+    const r = ctResOf(sid);
+    if (!r || typeof r !== "object") return [];
+    const subMaxMap = (r.__subMax && typeof r.__subMax === "object") ? r.__subMax : {};
+    const defMax = Math.max(1, Number(r.__maxMark) || 20);
+    return Object.entries(r)
+      .filter(([sub, val]) => Boolean(String(sub || "").trim()) && !String(sub).startsWith("__") && val !== "" && val !== null && val !== undefined && !Number.isNaN(Number(val)))
+      .map(([sub, val]) => {
+        const subMax = Math.max(1, Number(subMaxMap[sub]) || defMax);
+        const num = Math.max(0, Math.min(subMax, Number(val)));
+        const pct = subMax > 0 ? Math.min(100, (num / subMax) * 100) : 0;
+        return { subject: sub, marks: num, maxMark: subMax, pct: Math.round(pct), ...gradeOf(pct) };
+      });
+  };
+  const ctSummaryOf = sid => {
+    const r = ctResOf(sid);
+    const items = ctEntriesOf(sid);
+    if (items.length === 0) return null;
+    const defMax = Math.max(1, Number(r && r.__maxMark) || 20);
+    const title = (r && r.__title) ? String(r.__title) : "";
+    const totalMarks = items.reduce((s, it) => s + it.marks, 0);
+    const maxMarks = items.reduce((s, it) => s + it.maxMark, 0);
+    const pct = maxMarks > 0 ? Math.round((totalMarks / maxMarks) * 100) : 0;
+    if (items.some(g => g.gpa === 0)) {
+      return { gpa: 0, grade: "F", totalMarks, maxMarks, pct, subjectCount: items.length, maxMark: defMax, title, items };
+    }
+    const avg = Math.round((items.reduce((a, g) => a + g.gpa, 0) / items.length) * 100) / 100;
+    return { gpa: avg, grade: letterGradeFromGpa(avg), totalMarks, maxMarks, pct, subjectCount: items.length, maxMark: defMax, title, items };
+  };
+
+  const resClassOptions = useMemo(() => classOptionsOf(data), [data.classes]);
+  const resSectionOptions = useMemo(() => {
+    if (!resClass) return [];
+    const matched = (data.classes || []).find(c => c.name === resClass);
+    const secs = matched ? normalizeClassSections(matched).map(s => s.name) : defaultSectionNamesForClass(resClass);
+    const fromStudents = data.students.filter(s => s.cls === resClass).map(s => s.section || "ক").filter(Boolean);
+    return Array.from(new Set([...secs, ...fromStudents]));
+  }, [data.classes, data.students, resClass]);
+  const resFilteredStudents = useMemo(() => {
+    if (!resClass || !resSection) return [];
+    return data.students
+      .filter(x => x.cls === resClass && (resSection === "সব শাখা" || (x.section || "ক") === resSection))
+      .sort((a, b) => (Number(a.roll) || 0) - (Number(b.roll) || 0));
+  }, [data.students, resClass, resSection]);
+  const resSelectedStudent = useMemo(
+    () => data.students.find(x => x.id === resStudent) || null,
+    [data.students, resStudent]
+  );
+  const resSubjectOptions = useMemo(() => {
+    if (!resClass) return [];
+    const clsObj = (data.classes || []).find(c => c.name === resClass);
+    const effectiveSec = resSection && resSection !== "সব শাখা"
+      ? resSection
+      : ((resSelectedStudent && resSelectedStudent.section) || resSectionOptions[0] || "ক");
+    const secObj = clsObj ? normalizeClassSections(clsObj).find(s => s.name === effectiveSec) : null;
+    const secSubs = normalizeSectionSubjects(clsObj || { name: resClass }, secObj || { name: effectiveSec }, data.subjects).map(s => s.name);
+    const baseObj = resExamType === "classtest" ? (resStudent ? ctResOf(resStudent) : null) : (resStudent ? resOf(resStudent) : null);
+    const savedKeys = baseObj ? Object.keys(baseObj).filter(k => !k.startsWith("__")) : [];
+    const merged = Array.from(new Set([...secSubs, ...savedKeys])).filter(Boolean);
+    return merged.length > 0 ? merged : SUBJECTS;
+  }, [data.classes, data.subjects, data.results, resClass, resSection, resSectionOptions, resSelectedStudent, resStudent, resExamType]);
+
+  const hydrateStudentResultDrafts = sid => {
+    const existing = resOf(sid) || {};
+    const cleanMain = {};
+    Object.entries(existing).forEach(([k, v]) => {
+      if (!k.startsWith("__")) cleanMain[k] = v;
+    });
+    setMarks(cleanMain);
+    if (existing.__mainMax) setMainDefaultMax(String(existing.__mainMax));
+    if (existing.__subMax && typeof existing.__subMax === "object" && Object.keys(existing.__subMax).length > 0) {
+      setMainSubMax(prev => ({ ...prev, ...existing.__subMax }));
+    }
+
+    const ctExisting = ctResOf(sid) || {};
+    const { __maxMark, __title, __subMax: ctSavedSubMax, ...ctRest } = ctExisting;
+    const cleanCt = {};
+    Object.entries(ctRest).forEach(([k, v]) => {
+      if (!k.startsWith("__")) cleanCt[k] = v;
+    });
+    setCtMarks(cleanCt);
+    if (__maxMark) setCtMaxMark(String(__maxMark));
+    if (__title !== undefined) setCtTitle(String(__title || ""));
+    if (ctSavedSubMax && typeof ctSavedSubMax === "object" && Object.keys(ctSavedSubMax).length > 0) {
+      setCtSubMax(prev => ({ ...prev, ...ctSavedSubMax }));
+    }
+  };
+
+  const onChangeResClass = cls => {
+    setResClass(cls);
+    setResSection("");
+    setResStudent("");
+    setMarks({});
+    setCtMarks({});
+    setMainSubMax({});
+    setCtSubMax({});
+  };
+  const onChangeResSection = sec => {
+    setResSection(sec);
+    setResStudent("");
+    setMarks({});
+    setCtMarks({});
+  };
+  const onChangeResStudent = sid => {
+    setResStudent(sid);
+    hydrateStudentResultDrafts(sid);
+  };
+  const openMarks = (sid, targetMode) => {
+    const st = data.students.find(x => x.id === sid);
+    if (st) {
+      setResClass(st.cls || "");
+      setResSection(st.section || "ক");
+    }
+    if (targetMode) setResExamType(targetMode);
+    setResStudent(sid);
+    hydrateStudentResultDrafts(sid);
+  };
+  const getSubjectMaxFor = (sub, isCtMode) => {
+    if (isCtMode) {
+      const custom = ctSubMax[sub];
+      const n = Number(custom);
+      return custom !== undefined && custom !== "" && !Number.isNaN(n) && n >= 1 ? Math.min(1000, n) : effectiveCtMax;
+    }
+    const custom = mainSubMax[sub];
+    const n = Number(custom);
+    return custom !== undefined && custom !== "" && !Number.isNaN(n) && n >= 1 ? Math.min(1000, n) : effectiveMainDefaultMax;
+  };
+  const saveSingleSubjectMark = sub => {
+    if (!resStudent) return;
+    const subMax = getSubjectMaxFor(sub, false);
+    const raw = marks[sub];
+    if (raw === undefined || raw === null || String(raw).trim() === "" || Number.isNaN(Number(raw))) {
+      toast(`"${sub}" বিষয়ের প্রাপ্ত নম্বর লিখুন (০ থেকে ${toBnNum(subMax)})`);
+      return;
+    }
+    const num = Number(raw);
+    if (num < 0 || num > subMax) {
+      toast(`"${sub}"-এর প্রাপ্ত নম্বর অবশ্যই ০ থেকে ${toBnNum(subMax)}-এর মধ্যে হতে হবে`);
+      return;
+    }
+    const prevRow = data.results[resStudent] || {};
+    const nextSubMaxMap = { ...((prevRow.__subMax && typeof prevRow.__subMax === "object") ? prevRow.__subMax : {}), [sub]: subMax };
+    const nextStudentMarks = { ...prevRow, __mainMax: effectiveMainDefaultMax, __subMax: nextSubMaxMap, [sub]: num };
+    patch({ results: { ...data.results, [resStudent]: nextStudentMarks } });
+    setMarks(prev => ({ ...prev, [sub]: num }));
+    const st = data.students.find(x => x.id === resStudent);
+    toast(`${st ? st.name + " · " : ""}${sub}: ${toBnNum(num)}/${toBnNum(subMax)} রেজাল্ট শীটে যোগ হয়েছে`);
+  };
+  const removeSubjectMark = (sid, sub) => {
+    const cur = { ...(data.results[sid] || {}) };
+    delete cur[sub];
+    if (cur.__subMax && typeof cur.__subMax === "object") {
+      const nextSM = { ...cur.__subMax };
+      delete nextSM[sub];
+      cur.__subMax = nextSM;
+    }
+    const nextResults = { ...data.results };
+    const hasMainSubs = Object.keys(cur).some(k => !k.startsWith("__"));
+    if (!hasMainSubs && !cur.__ct) delete nextResults[sid];
+    else {
+      if (!hasMainSubs) {
+        delete cur.__subMax;
+        delete cur.__mainMax;
+      }
+      nextResults[sid] = cur;
+    }
+    patch({ results: nextResults });
+    if (sid === resStudent) {
+      setMarks(prev => {
+        const next = { ...prev };
+        delete next[sub];
+        return next;
+      });
+    }
+    toast(`"${sub}" বিষয়ের নম্বর মুছে ফেলা হয়েছে`);
+  };
+  const saveMarks = () => {
+    if (!resStudent) {
+      toast("অনুগ্রহ করে শ্রেণি, শাখা এবং শিক্ষার্থী নির্বাচন করুন");
+      return;
+    }
+    const prevRow = data.results[resStudent] || {};
+    const preservedCt = prevRow.__ct ? { __ct: prevRow.__ct } : {};
+    const cleaned = { ...preservedCt, __mainMax: effectiveMainDefaultMax };
+    const nextSubMaxMap = {};
+    let count = 0;
+    for (const [sub, raw] of Object.entries(marks || {})) {
+      if (sub.startsWith("__") || raw === undefined || raw === null || String(raw).trim() === "") continue;
+      const subMax = getSubjectMaxFor(sub, false);
+      const num = Number(raw);
+      if (Number.isNaN(num) || num < 0 || num > subMax) {
+        toast(`"${sub}" বিষয়ে সঠিক নম্বর লিখুন (০ থেকে ${toBnNum(subMax)})`);
+        return;
+      }
+      cleaned[sub] = num;
+      nextSubMaxMap[sub] = subMax;
+      count++;
+    }
+    if (count === 0) {
+      toast("অন্তত একটি বিষয়ের প্রাপ্ত নম্বর লিখুন");
+      return;
+    }
+    cleaned.__subMax = nextSubMaxMap;
+    const nextResults = { ...data.results, [resStudent]: cleaned };
+    patch({ results: nextResults });
+    const onlySubs = {};
+    Object.entries(cleaned).forEach(([k, v]) => { if (!k.startsWith("__")) onlySubs[k] = v; });
+    setMarks(onlySubs);
+    const st = data.students.find(x => x.id === resStudent);
+    toast(`${st ? st.name + "-এর " : ""}${toBnNum(count)}টি বিষয়ের প্রাপ্ত নম্বর রেজাল্ট শীটে যোগ হয়েছে`);
+  };
+
+  /* শ্রেণি পরীক্ষার নম্বর যোগ/সংরক্ষণ */
+  const saveSingleClassTestMark = sub => {
+    if (!resStudent) return;
+    const subMax = getSubjectMaxFor(sub, true);
+    const raw = ctMarks[sub];
+    if (raw === undefined || raw === null || String(raw).trim() === "" || Number.isNaN(Number(raw))) {
+      toast(`"${sub}" বিষয়ের প্রাপ্ত নম্বর লিখুন (০ থেকে ${toBnNum(subMax)})`);
+      return;
+    }
+    const num = Number(raw);
+    if (num < 0 || num > subMax) {
+      toast(`"${sub}"-এর প্রাপ্ত নম্বর অবশ্যই ০ থেকে ${toBnNum(subMax)}-এর মধ্যে হতে হবে`);
+      return;
+    }
+    const prevRow = data.results[resStudent] || {};
+    const prevCt = ctResOf(resStudent) || {};
+    const nextSubMaxMap = { ...((prevCt.__subMax && typeof prevCt.__subMax === "object") ? prevCt.__subMax : {}), [sub]: subMax };
+    const nextCt = { ...prevCt, __maxMark: effectiveCtMax, __title: ctTitle.trim(), __subMax: nextSubMaxMap, [sub]: num };
+    const nextResults = { ...data.results, [resStudent]: { ...prevRow, __ct: nextCt } };
+    delete nextResults[ctKeyOf(resStudent)];
+    patch({ results: nextResults });
+    setCtMarks(p => ({ ...p, [sub]: num }));
+    const st = data.students.find(x => x.id === resStudent);
+    toast(`${st ? st.name + " · " : ""}${sub}: ${toBnNum(num)}/${toBnNum(subMax)} শ্রেণি পরীক্ষার শীটে যোগ হয়েছে`);
+  };
+  const removeClassTestMark = (sid, sub) => {
+    const prevRow = { ...(data.results[sid] || {}) };
+    const curCt = { ...(ctResOf(sid) || {}) };
+    delete curCt[sub];
+    if (curCt.__subMax && typeof curCt.__subMax === "object") {
+      const nextSM = { ...curCt.__subMax };
+      delete nextSM[sub];
+      curCt.__subMax = nextSM;
+    }
+    const nextResults = { ...data.results };
+    delete nextResults[ctKeyOf(sid)];
+    const subKeys = Object.keys(curCt).filter(k => !k.startsWith("__"));
+    if (subKeys.length === 0) {
+      delete prevRow.__ct;
+      const hasMainSubs = Object.keys(prevRow).some(k => !k.startsWith("__"));
+      if (!hasMainSubs) delete nextResults[sid];
+      else nextResults[sid] = prevRow;
+    } else {
+      nextResults[sid] = { ...prevRow, __ct: curCt };
+    }
+    patch({ results: nextResults });
+    if (sid === resStudent) {
+      setCtMarks(prev => {
+        const next = { ...prev };
+        delete next[sub];
+        return next;
+      });
+    }
+    toast(`শ্রেণি পরীক্ষার "${sub}" বিষয়ের নম্বর মুছে ফেলা হয়েছে`);
+  };
+  const saveClassTestMarks = () => {
+    if (!resStudent) {
+      toast("অনুগ্রহ করে শ্রেণি, শাখা এবং শিক্ষার্থী নির্বাচন করুন");
+      return;
+    }
+    const defMax = effectiveCtMax;
+    const cleanedCt = { __maxMark: defMax, __title: ctTitle.trim() };
+    const nextSubMaxMap = {};
+    let count = 0;
+    for (const [sub, raw] of Object.entries(ctMarks || {})) {
+      if (sub.startsWith("__") || raw === undefined || raw === null || String(raw).trim() === "") continue;
+      const subMax = getSubjectMaxFor(sub, true);
+      const num = Number(raw);
+      if (Number.isNaN(num) || num < 0 || num > subMax) {
+        toast(`"${sub}" বিষয়ে সঠিক নম্বর লিখুন (০ থেকে ${toBnNum(subMax)})`);
+        return;
+      }
+      cleanedCt[sub] = num;
+      nextSubMaxMap[sub] = subMax;
+      count++;
+    }
+    if (count === 0) {
+      toast("অন্তত একটি বিষয়ের প্রাপ্ত নম্বর লিখুন");
+      return;
+    }
+    cleanedCt.__subMax = nextSubMaxMap;
+    const prevRow = data.results[resStudent] || {};
+    const nextResults = { ...data.results, [resStudent]: { ...prevRow, __ct: cleanedCt } };
+    delete nextResults[ctKeyOf(resStudent)];
+    patch({ results: nextResults });
+    const onlySubs = {};
+    Object.entries(cleanedCt).forEach(([k, v]) => { if (!k.startsWith("__")) onlySubs[k] = v; });
+    setCtMarks(onlySubs);
+    const st = data.students.find(x => x.id === resStudent);
+    toast(`${st ? st.name + "-এর " : ""}${toBnNum(count)}টি বিষয়ের শ্রেণি পরীক্ষার নম্বর সংরক্ষিত হয়েছে`);
+  };
+
+  const resSheetSectionOptions = useMemo(() => {
+    if (resSheetCls === "সব") {
+      const fromData = data.students
+        .filter(s => (resExamType === "classtest" ? ctSummaryOf(s.id) : gpaOf(s.id)))
+        .map(s => s.section || "ক")
+        .filter(Boolean);
+      return Array.from(new Set([...SECTION_NAMES, ...GROUP_SECTION_NAMES, ...fromData]));
+    }
+    const matched = (data.classes || []).find(c => c.name === resSheetCls);
+    const secs = matched ? normalizeClassSections(matched).map(s => s.name) : defaultSectionNamesForClass(resSheetCls);
+    const fromData = data.students.filter(s => s.cls === resSheetCls).map(s => s.section || "ক").filter(Boolean);
+    return Array.from(new Set([...secs, ...fromData]));
+  }, [data.classes, data.students, data.results, resSheetCls, resExamType]);
+
+  const resSheetStudents = useMemo(() => {
+    const q = resSheetQ.trim();
+    return data.students
+      .filter(x => {
+        if (!gpaOf(x.id)) return false;
+        if (resSheetCls !== "সব" && x.cls !== resSheetCls) return false;
+        if (resSheetSec !== "সব" && (x.section || "ক") !== resSheetSec) return false;
+        if (!q) return true;
+        return x.name.includes(q) || String(x.roll).includes(q) || (x.cls || "").includes(q) || (x.section || "").includes(q);
+      })
+      .sort((a, b) => {
+        const ca = CLASS_NAMES.indexOf(a.cls);
+        const cb = CLASS_NAMES.indexOf(b.cls);
+        if (ca !== cb) return (ca === -1 ? 999 : ca) - (cb === -1 ? 999 : cb);
+        return (Number(a.roll) || 0) - (Number(b.roll) || 0);
+      });
+  }, [data.students, data.results, resSheetCls, resSheetSec, resSheetQ]);
+
+  const ctSheetStudents = useMemo(() => {
+    const q = resSheetQ.trim();
+    return data.students
+      .filter(x => {
+        if (!ctSummaryOf(x.id)) return false;
+        if (resSheetCls !== "সব" && x.cls !== resSheetCls) return false;
+        if (resSheetSec !== "সব" && (x.section || "ক") !== resSheetSec) return false;
+        if (!q) return true;
+        return x.name.includes(q) || String(x.roll).includes(q) || (x.cls || "").includes(q) || (x.section || "").includes(q);
+      })
+      .sort((a, b) => {
+        const ca = CLASS_NAMES.indexOf(a.cls);
+        const cb = CLASS_NAMES.indexOf(b.cls);
+        if (ca !== cb) return (ca === -1 ? 999 : ca) - (cb === -1 ? 999 : cb);
+        return (Number(a.roll) || 0) - (Number(b.roll) || 0);
+      });
+  }, [data.students, data.results, resSheetCls, resSheetSec, resSheetQ]);
+
+  const printResultSheet = () => {
+    document.body.classList.add("printing-result-sheet");
+    setTimeout(() => {
+      window.print();
+      setTimeout(() => document.body.classList.remove("printing-result-sheet"), 300);
+    }, 60);
+  };
+
+  const downloadResult = (st, mode = "main") => {
+    const isCt = mode === "classtest";
+    const g = isCt ? ctSummaryOf(st.id) : gpaOf(st.id);
+    const items = g ? g.items : [];
+    const sheetHeading = isCt
+      ? `শ্রেণি পরীক্ষার ফলাফল শিট${g && g.title ? ` (${g.title})` : ""}`
+      : "শিক্ষার্থীর একাডেমিক ফলাফল শিট";
+    const rows = items.map(it =>
+      `<tr><td>${it.subject}</td><td style="text-align:center">${toBnNum(it.maxMark)}</td><td style="text-align:center"><b>${toBnNum(it.marks)}</b></td><td style="text-align:center">${toBnNum(it.pct)}%</td><td style="text-align:center">${it.grade}</td><td style="text-align:center">${it.gpa.toFixed(1)}</td></tr>`
+    ).join("");
+    const photoHtml = st.photo
+      ? `<img src="${st.photo}" alt="${st.name}" style="width:84px;height:96px;object-fit:cover;border-radius:10px;border:2px solid #1d6b3c" />`
+      : `<div style="width:84px;height:96px;border-radius:10px;border:2px solid #1d6b3c;background:#e8f3eb;color:#123f24;display:flex;align-items:center;justify-content:center;font-size:32px;font-weight:700">${(st.name || "শ").trim().charAt(0)}</div>`;
+    const html = `<!doctype html><html lang='bn'><head><meta charset='utf-8'><title>${sheetHeading} - ${st.name}</title><style>body{font-family:sans-serif;padding:30px;color:#1c2a1e}table{border-collapse:collapse;width:100%;margin-top:14px}td,th{border:1px solid #999;padding:8px}th{background:#f2f6ef}h1{text-align:center;margin-bottom:2px}p.sub{text-align:center;margin-top:0;color:#555}.stu-box{display:flex;align-items:center;gap:16px;padding:12px 14px;border:1px solid #c9d6c5;border-radius:10px;background:#f8fbf6;margin:14px 0}</style></head><body><h1>${S.name}</h1><p class="sub">${S.motto || ""}</p><h3 style="text-align:center;margin-bottom:6px">${sheetHeading}</h3><div class="stu-box">${photoHtml}<div><div style="font-size:18px;font-weight:700;margin-bottom:4px">${st.name}</div><div>শ্রেণি: <b>${st.cls}</b> · শাখা: <b>${st.section || "ক"}</b> · রোল: <b>${toBnNum(st.roll)}</b></div><div>অভিভাবক: ${st.guardian || "—"} · মোবাইল: ${st.phone || "—"}</div></div></div><table><tr><th>বিষয়</th><th>বরাদ্দকৃত পূর্ণমান</th><th>প্রাপ্ত নম্বর</th><th>শতকরা</th><th>গ্রেড</th><th>জিপি</th></tr>${rows || "<tr><td colspan='6' style='text-align:center'>কোনো নম্বর যুক্ত হয়নি</td></tr>"}</table><p style='text-align:left;margin-top:14px;font-size:15px'><b>মোট প্রাপ্ত নম্বর: ${g ? `${toBnNum(g.totalMarks)} / ${toBnNum(g.maxMarks)} (${toBnNum(g.pct)}%)` : "—"} · চূড়ান্ত গ্রেড: ${g ? g.grade : "—"} · গড় GPA: ${g ? g.gpa.toFixed(2) : "—"}</b></p></body></html>`;
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
-    a.download = "result-" + st.roll + ".html"; document.body.appendChild(a); a.click(); a.remove();
-    toast("ফলাফল শিট ডাউনলোড হচ্ছে");
+    a.download = (isCt ? "classtest-result-" : "result-") + st.cls + "-" + st.roll + ".html";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    toast(isCt ? "শ্রেণি পরীক্ষার ছবিসহ ফলাফল শিট ডাউনলোড হচ্ছে" : "ছবিসহ ফলাফল শিট ডাউনলোড হচ্ছে");
   };
 
   const markQrAttendance = (rawCode, targetDate) => {
@@ -3664,36 +4094,384 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
           </div>;
         })()}
 
-        {mod === "results" && <div>
-          <h1>পরীক্ষা ও ফলাফল</h1><p className="lede">বিষয়ভিত্তিক নম্বর দিলে বাংলাদেশি পদ্ধতিতে GPA/গ্রেড অটো হিসাব হবে</p>
-          <div className={isStudent ? "" : "grid2"}>
-            {!isStudent && <div className="card">
-              <h3 style={{ marginTop: 0 }}>নম্বর এন্ট্রি</h3>
-              <label>শিক্ষার্থী নির্বাচন করুন</label>
-              <select value={resStudent} onChange={e => openMarks(e.target.value)}>
-                <option value="">— নির্বাচন করুন —</option>
-                {data.students.map(x => <option key={x.id} value={x.id}>{x.name} ({x.cls}, রোল {x.roll})</option>)}
-              </select>
-              {resStudent && <div style={{ marginTop: 12 }}>
-                {SUBJECTS.map(sub => <div key={sub} style={{ marginBottom: 9 }}>
-                  <label>{sub} (০–১০০)</label>
-                  <input type="number" min="0" max="100" value={marks[sub] === undefined ? "" : marks[sub]}
-                    onChange={e => setMarks({ ...marks, [sub]: e.target.value })} placeholder="নম্বর" />
-                </div>)}
-                <button className="btn btn-brand btn-block" onClick={saveMarks}>নম্বর সংরক্ষণ করুন</button>
-              </div>}
-              {!resStudent && <p style={{ color: "var(--muted)" }}>শিক্ষার্থী বাছলে নম্বর দেওয়ার ঘর আসবে।</p>}
-            </div>}
-            <div className="card">
-              <h3 style={{ marginTop: 0 }}>ফলাফল তালিকা</h3>
-              {data.students.filter(x => resOf(x.id)).length === 0 && <p style={{ color: "var(--muted)" }}>এখনো কারো ফলাফল দেওয়া হয়নি।</p>}
-              {data.students.filter(x => resOf(x.id)).map(x => { const g = gpaOf(x.id); return (
-                <div className="notice-item" key={x.id}><div><h3>{x.name} — {x.cls}, রোল {x.roll}</h3>
-                  <p>GPA: <b>{g ? g.gpa.toFixed(2) : "—"}</b></p></div>
-                  <span style={{ marginLeft: "auto" }}><button className="mini-btn" onClick={() => downloadResult(x)}>ফলাফল শিট ডাউনলোড</button></span></div>); })}
+        {mod === "results" && (() => {
+          const isCt = resExamType === "classtest";
+          const mainCount = data.students.filter(s => gpaOf(s.id)).length;
+          const ctCount = data.students.filter(s => ctSummaryOf(s.id)).length;
+          const activeList = isCt ? ctSheetStudents : resSheetStudents;
+          const activeMarks = isCt ? ctMarks : marks;
+          const setActiveMarks = isCt ? setCtMarks : setMarks;
+          const activeDefaultMax = isCt ? effectiveCtMax : effectiveMainDefaultMax;
+          const activeSubMaxMap = isCt ? ctSubMax : mainSubMax;
+          const setActiveSubMaxMap = isCt ? setCtSubMax : setMainSubMax;
+
+          let draftObtained = 0;
+          let draftFull = 0;
+          const draftItems = [];
+          resSubjectOptions.forEach(sub => {
+            const raw = activeMarks[sub];
+            if (raw === undefined || raw === null || String(raw).trim() === "" || Number.isNaN(Number(raw))) return;
+            const subM = getSubjectMaxFor(sub, isCt);
+            const obt = Math.max(0, Math.min(subM, Number(raw)));
+            const pct = subM > 0 ? Math.min(100, (obt / subM) * 100) : 0;
+            draftObtained += obt;
+            draftFull += subM;
+            draftItems.push(gradeOf(pct));
+          });
+          const draftPct = draftFull > 0 ? Math.round((draftObtained / draftFull) * 100) : 0;
+          const draftHasFail = draftItems.some(g => g.gpa === 0);
+          const draftGpa = draftItems.length > 0
+            ? (draftHasFail ? 0 : Math.round((draftItems.reduce((s, g) => s + g.gpa, 0) / draftItems.length) * 100) / 100)
+            : null;
+          const draftGrade = draftGpa !== null ? (draftHasFail ? "F" : letterGradeFromGpa(draftGpa)) : "—";
+
+          return <div>
+            <h1>পরীক্ষা ও ফলাফল</h1>
+            <p className="lede">প্রধান পরীক্ষা ও শ্রেণি পরীক্ষার আলাদা রেজাল্ট শীট — প্রতিটি বিষয়ে কত নম্বরের পরীক্ষা হয়েছে তা কাস্টমাইজ করলে সেই অনুযায়ী GPA ও গ্রেড হিসাব হবে</p>
+
+            <div className="role-tabs" style={{ maxWidth: 680 }}>
+              <button type="button" className={resExamType === "main" ? "on" : ""} onClick={() => setResExamType("main")}>
+                📊 প্রধান পরীক্ষার ফলাফল ({toBnNum(mainCount)})
+              </button>
+              <button type="button" className={resExamType === "classtest" ? "on" : ""} onClick={() => setResExamType("classtest")}>
+                📝 শ্রেণি পরীক্ষার ফলাফল — ২০/কাস্টম ({toBnNum(ctCount)})
+              </button>
             </div>
-          </div>
-        </div>}
+
+            <div className={isStudent ? "" : "grid2"} style={{ alignItems: "start" }}>
+              {!isStudent && <div className="card">
+                <h3 style={{ marginTop: 0, marginBottom: 4 }}>
+                  {isCt ? "শ্রেণি পরীক্ষার নম্বর ও পূর্ণমান এন্ট্রি" : "প্রধান পরীক্ষার নম্বর ও পূর্ণমান এন্ট্রি"}
+                </h3>
+                <p style={{ margin: "0 0 12px", fontSize: 13, color: "var(--muted)" }}>
+                  শ্রেণি → শাখা → শিক্ষার্থী বাছলে সব বিষয় দেখাবে। প্রতিটি বিষয়ের বরাদ্দকৃত পূর্ণমান কাস্টমাইজ করা যাবে।
+                </p>
+
+                <div className="res-step-box">
+                  <div style={{ padding: "10px 12px", borderRadius: 10, background: "var(--surface2)", border: "1px solid var(--line)", display: "grid", gap: 8 }}>
+                    <div>
+                      <label>
+                        {isCt
+                          ? "০. শ্রেণি পরীক্ষার ডিফল্ট পূর্ণমান (২০ বা কাস্টম) *"
+                          : "০. প্রধান পরীক্ষার ডিফল্ট পূর্ণমান (১০০ বা কাস্টম) *"}
+                      </label>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                        {(isCt ? [10, 15, 20, 25, 30, 50] : [25, 50, 75, 100]).map(preset => (
+                          <button
+                            key={preset}
+                            type="button"
+                            className={"class-chip-btn" + (activeDefaultMax === preset ? " on" : "")}
+                            style={{ minHeight: 30, padding: "2px 10px", fontSize: 12.5 }}
+                            onClick={() => {
+                              if (isCt) {
+                                setCtMaxMark(String(preset));
+                                setCtSubMax({});
+                              } else {
+                                setMainDefaultMax(String(preset));
+                                setMainSubMax({});
+                              }
+                            }}
+                          >
+                            {toBnNum(preset)}
+                          </button>
+                        ))}
+                        <div style={{ display: "flex", alignItems: "center", gap: 5, marginLeft: "auto" }}>
+                          <span style={{ fontSize: 12, color: "var(--muted)" }}>কাস্টম:</span>
+                          <input
+                            type="number"
+                            min="1"
+                            max="1000"
+                            value={isCt ? ctMaxMark : mainDefaultMax}
+                            onChange={e => {
+                              if (isCt) {
+                                setCtMaxMark(e.target.value);
+                                setCtSubMax({});
+                              } else {
+                                setMainDefaultMax(e.target.value);
+                                setMainSubMax({});
+                              }
+                            }}
+                            style={{ width: 78, minHeight: 32, padding: "4px 8px", textAlign: "center", fontWeight: 700 }}
+                            placeholder={isCt ? "২০" : "১০০"}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                    {isCt && (
+                      <div>
+                        <label>শ্রেণি পরীক্ষার নাম / শিরোনাম (ঐচ্ছিক)</label>
+                        <input
+                          value={ctTitle}
+                          onChange={e => setCtTitle(e.target.value)}
+                          placeholder="যেমন: ১ম শ্রেণি পরীক্ষা / মাসিক পরীক্ষা"
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    <label>১. শ্রেণি নির্বাচন করুন *</label>
+                    <select value={resClass} onChange={e => onChangeResClass(e.target.value)}>
+                      <option value="">— শ্রেণি নির্বাচন করুন —</option>
+                      {resClassOptions.map(cName => {
+                        const cnt = data.students.filter(s => s.cls === cName).length;
+                        return <option key={cName} value={cName}>{cName} ({toBnNum(cnt)} জন)</option>;
+                      })}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label>২. শাখা নির্বাচন করুন *</label>
+                    <select value={resSection} onChange={e => onChangeResSection(e.target.value)} disabled={!resClass}>
+                      <option value="">{resClass ? "— শাখা নির্বাচন করুন —" : "আগে শ্রেণি নির্বাচন করুন"}</option>
+                      {resClass && resSectionOptions.map(secName => {
+                        const cnt = data.students.filter(s => s.cls === resClass && (s.section || "ক") === secName).length;
+                        return <option key={secName} value={secName}>{secName} ({toBnNum(cnt)} জন)</option>;
+                      })}
+                      {resClass && resSectionOptions.length > 1 && <option value="সব শাখা">সব শাখা ({toBnNum(data.students.filter(s => s.cls === resClass).length)} জন)</option>}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label>৩. শিক্ষার্থীর লিস্ট নির্বাচন করুন *</label>
+                    <select value={resStudent} onChange={e => onChangeResStudent(e.target.value)} disabled={!resClass || !resSection}>
+                      <option value="">{!resSection ? "আগে শাখা নির্বাচন করুন" : (resFilteredStudents.length === 0 ? "এই শাখায় কোনো শিক্ষার্থী নেই" : "— শিক্ষার্থী নির্বাচন করুন —")}</option>
+                      {resFilteredStudents.map(x => (
+                        <option key={x.id} value={x.id}>রোল {toBnNum(x.roll)} — {x.name}{resSection === "সব শাখা" ? ` (${x.section || "ক"})` : ""}</option>
+                      ))}
+                    </select>
+                    {resSelectedStudent && (() => {
+                      const stuSum = isCt ? ctSummaryOf(resSelectedStudent.id) : gpaOf(resSelectedStudent.id);
+                      return (
+                        <div className="res-stu-preview">
+                          {resSelectedStudent.photo
+                            ? <div className="res-photo"><img src={resSelectedStudent.photo} alt={resSelectedStudent.name} /></div>
+                            : <div className="res-photo">{(resSelectedStudent.name || "শ").trim().charAt(0)}</div>}
+                          <div style={{ minWidth: 0, flex: 1 }}>
+                            <div style={{ fontWeight: 700, fontSize: 15 }}>{resSelectedStudent.name}</div>
+                            <div style={{ fontSize: 12.5, color: "var(--muted)" }}>
+                              শ্রেণি: <b>{resSelectedStudent.cls}</b> · শাখা: <b>{resSelectedStudent.section || "ক"}</b> · রোল: <b>{toBnNum(resSelectedStudent.roll)}</b>
+                            </div>
+                            {stuSum && (
+                              <div style={{ fontSize: 12.5, color: "var(--brand)", fontWeight: 700, marginTop: 2 }}>
+                                {isCt ? "শ্রেণি পরীক্ষা: " : "সংরক্ষিত: "}
+                                {toBnNum(stuSum.totalMarks)}/{toBnNum(stuSum.maxMarks)} ({toBnNum(stuSum.pct)}%) · GPA {stuSum.gpa.toFixed(2)} ({stuSum.grade})
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {resSelectedStudent ? (
+                    <div>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4, gap: 6, flexWrap: "wrap" }}>
+                        <label style={{ margin: 0 }}>৪. সব বিষয়ের পূর্ণমান ও প্রাপ্ত নম্বর ({toBnNum(resSubjectOptions.length)}টি বিষয়)</label>
+                        <span style={{ fontSize: 11.5, color: "var(--muted)" }}>প্রতি বিষয়ের পূর্ণমান আলাদা বদলানো যাবে</span>
+                      </div>
+                      <div className="res-sub-head">
+                        <span>বিষয়ের নাম</span>
+                        <span style={{ textAlign: "center" }}>পূর্ণমান</span>
+                        <span style={{ textAlign: "center" }}>প্রাপ্ত নম্বর</span>
+                        <span style={{ textAlign: "center" }}>গ্রেড (GPA)</span>
+                        <span>অ্যাকশন</span>
+                      </div>
+                      <div className="res-sub-list">
+                        {resSubjectOptions.map((sub, idx) => {
+                          const subMaxRaw = activeSubMaxMap[sub];
+                          const subMaxInputVal = subMaxRaw !== undefined ? String(subMaxRaw) : String(activeDefaultMax);
+                          const subMax = getSubjectMaxFor(sub, isCt);
+                          const val = activeMarks[sub] === undefined || activeMarks[sub] === null ? "" : String(activeMarks[sub]);
+                          const hasInput = val !== "" && !Number.isNaN(Number(val));
+                          const numVal = hasInput ? Number(val) : 0;
+                          const isOverMax = hasInput && (numVal < 0 || numVal > subMax);
+                          const clamped = hasInput ? Math.max(0, Math.min(subMax, numVal)) : 0;
+                          const pct = subMax > 0 ? Math.min(100, (clamped / subMax) * 100) : 0;
+                          const gr = hasInput && !isOverMax ? gradeOf(pct) : null;
+                          const savedSrc = isCt ? ctResOf(resStudent) : resOf(resStudent);
+                          const isSaved = Boolean(savedSrc && savedSrc[sub] !== undefined && savedSrc[sub] !== "");
+                          return (
+                            <div key={sub} className={"res-sub-row" + (isSaved ? " saved" : "")}>
+                              <div style={{ fontSize: 13.5, fontWeight: 600, minWidth: 0 }}>
+                                <span style={{ color: "var(--muted)", marginRight: 5, fontVariantNumeric: "tabular-nums" }}>{toBnNum(idx + 1)}.</span>
+                                <span>{sub}</span>
+                                {isSaved && <span style={{ marginLeft: 5, fontSize: 11, color: "var(--brand)", fontWeight: 700 }}>✓</span>}
+                              </div>
+                              <input
+                                type="number"
+                                min="1"
+                                max="1000"
+                                className="max-inp"
+                                value={subMaxInputVal}
+                                onChange={e => setActiveSubMaxMap(prev => ({ ...prev, [sub]: e.target.value }))}
+                                title={`${sub}-এর বরাদ্দকৃত পূর্ণমান`}
+                                placeholder={String(activeDefaultMax)}
+                              />
+                              <input
+                                type="number"
+                                min="0"
+                                max={subMax}
+                                style={isOverMax ? { borderColor: "var(--danger)", color: "var(--danger)" } : undefined}
+                                value={val}
+                                onChange={e => setActiveMarks(prev => ({ ...prev, [sub]: e.target.value }))}
+                                onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); isCt ? saveSingleClassTestMark(sub) : saveSingleSubjectMark(sub); } }}
+                                placeholder={`০–${toBnNum(subMax)}`}
+                              />
+                              <div className="res-row-grade" style={{ textAlign: "center" }}>
+                                {isOverMax ? (
+                                  <span className="res-grade-badge fail" style={{ fontSize: 11, padding: "2px 6px" }}>অবৈধ</span>
+                                ) : gr ? (
+                                  <span className={"res-grade-badge" + (gr.gpa === 0 ? " fail" : "")} style={{ fontSize: 11.5, padding: "2px 7px" }}>
+                                    {gr.grade} ({gr.gpa.toFixed(1)})
+                                  </span>
+                                ) : (
+                                  <span style={{ fontSize: 12, color: "var(--muted)" }}>—</span>
+                                )}
+                              </div>
+                              <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                                <button
+                                  type="button"
+                                  className="mini-btn"
+                                  onClick={() => (isCt ? saveSingleClassTestMark(sub) : saveSingleSubjectMark(sub))}
+                                  title="এই বিষয়ের নম্বর ও পূর্ণমান রেজাল্ট শীটে যোগ করুন"
+                                >
+                                  {isSaved ? "আপডেট" : "+ যোগ"}
+                                </button>
+                                {isSaved && (
+                                  <button
+                                    type="button"
+                                    className="mini-btn red"
+                                    onClick={() => (isCt ? removeClassTestMark(resSelectedStudent.id, sub) : removeSubjectMark(resSelectedStudent.id, sub))}
+                                    title="এই বিষয়ের নম্বর মুছুন"
+                                  >
+                                    ×
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {draftGpa !== null && (
+                        <div className="note-box" style={{ marginTop: 10, marginBottom: 0, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
+                          <span>
+                            হিসাবকৃত মোট: <b>{toBnNum(draftObtained)}</b> / <b>{toBnNum(draftFull)}</b> ({toBnNum(draftPct)}%)
+                          </span>
+                          <span className={"res-grade-badge" + (draftHasFail ? " fail" : "")}>
+                            GPA: {draftGpa.toFixed(2)} · {draftGrade}
+                          </span>
+                        </div>
+                      )}
+                      <button type="button" className="btn btn-brand btn-block" style={{ marginTop: 10 }} onClick={isCt ? saveClassTestMarks : saveMarks}>
+                        {isCt ? "✓ শ্রেণি পরীক্ষার সব নম্বর ও পূর্ণমান সংরক্ষণ করুন" : "✓ সব বিষয়ের নম্বর ও পূর্ণমান রেজাল্ট শীটে সংরক্ষণ করুন"}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="note-box" style={{ margin: 0 }}>
+                      শ্রেণি, শাখা ও শিক্ষার্থী নির্বাচন করলে এই শ্রেণি-শাখার সব বিষয়ের তালিকা একসাথে দেখাবে এবং প্রতিটি বিষয়ের পূর্ণমান ও প্রাপ্ত নম্বর যোগ করা যাবে।
+                    </div>
+                  )}
+                </div>
+              </div>}
+
+              <div className="card">
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+                  <div>
+                    <h3 style={{ margin: 0 }}>
+                      {isCt ? "শ্রেণি পরীক্ষার রেজাল্ট শীট (ছবিসহ আলাদা তালিকা)" : "প্রধান পরীক্ষার রেজাল্ট শীট (ছবিসহ ফলাফল তালিকা)"}
+                    </h3>
+                    <div style={{ fontSize: 12.5, color: "var(--muted)" }}>
+                      প্রদর্শিত ফলাফল: {toBnNum(activeList.length)} জন শিক্ষার্থী · বরাদ্দকৃত পূর্ণমান অনুযায়ী GPA ও গ্রেড
+                    </div>
+                  </div>
+                  <button type="button" className="btn btn-ghost btn-sm no-print" onClick={printResultSheet} disabled={activeList.length === 0}>
+                    🖨 {isCt ? "শ্রেণি পরীক্ষা শীট প্রিন্ট" : "রেজাল্ট শীট প্রিন্ট"}
+                  </button>
+                </div>
+
+                <div className="no-print" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1.2fr", gap: 8, marginBottom: 12 }}>
+                  <select value={resSheetCls} onChange={e => { setResSheetCls(e.target.value); setResSheetSec("সব"); }}>
+                    <option value="সব">সব শ্রেণি</option>
+                    {resClassOptions.map(cName => <option key={cName} value={cName}>{cName}</option>)}
+                  </select>
+                  <select value={resSheetSec} onChange={e => setResSheetSec(e.target.value)}>
+                    <option value="সব">সব শাখা</option>
+                    {resSheetSectionOptions.map(secName => <option key={secName} value={secName}>{secName}</option>)}
+                  </select>
+                  <input
+                    value={resSheetQ}
+                    onChange={e => setResSheetQ(e.target.value)}
+                    placeholder="নাম বা রোল খুঁজুন..."
+                  />
+                </div>
+
+                <div className="result-sheet-print-area">
+                  <div style={{ display: "none" }} className="print-only-header">
+                    <h2>{S.name} — {isCt ? "শ্রেণি পরীক্ষার রেজাল্ট শীট" : "রেজাল্ট শীট"}</h2>
+                  </div>
+                  {activeList.length === 0 && (
+                    <p style={{ color: "var(--muted)", margin: 0 }}>
+                      {isCt
+                        ? "এখনো কোনো শিক্ষার্থীর শ্রেণি পরীক্ষার ফলাফল যোগ করা হয়নি। বাম পাশ থেকে বিষয়ের পূর্ণমান ও প্রাপ্ত নম্বর যোগ করুন।"
+                        : (resSheetStudents.length === 0 && mainCount === 0
+                          ? "এখনো কোনো শিক্ষার্থীর ফলাফল যোগ করা হয়নি। বাম পাশ থেকে শ্রেণি, শাখা ও শিক্ষার্থী নির্বাচন করে প্রাপ্ত নম্বর যোগ করুন।"
+                          : "নির্বাচিত ফিল্টারে কোনো ফলাফল পাওয়া যায়নি।")}
+                    </p>
+                  )}
+                  {activeList.map(x => {
+                    const g = isCt ? ctSummaryOf(x.id) : gpaOf(x.id);
+                    if (!g) return null;
+                    return (
+                      <div className="res-sheet-card" key={x.id}>
+                        <div className="res-sheet-top">
+                          {x.photo
+                            ? <div className="res-photo"><img src={x.photo} alt={x.name} /></div>
+                            : <div className="res-photo">{(x.name || "শ").trim().charAt(0)}</div>}
+                          <div style={{ flex: 1, minWidth: 160 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                              <span style={{ fontWeight: 700, fontSize: 15.5 }}>{x.name}</span>
+                              {isCt && g.title && <span className="sub-badge">{g.title}</span>}
+                            </div>
+                            <div style={{ fontSize: 13, color: "var(--muted)" }}>
+                              শ্রেণি: <b>{x.cls}</b> · শাখা: <b>{x.section || "ক"}</b> · রোল: <b style={{ fontVariantNumeric: "tabular-nums" }}>{toBnNum(x.roll)}</b>
+                            </div>
+                            <div style={{ fontSize: 12.5, color: "var(--ink2)", marginTop: 2, fontVariantNumeric: "tabular-nums" }}>
+                              মোট নম্বর: <b>{toBnNum(g.totalMarks)}</b> / {toBnNum(g.maxMarks)} ({toBnNum(g.pct)}% · {toBnNum(g.subjectCount)} বিষয়)
+                            </div>
+                          </div>
+                          <div style={{ textAlign: "right" }}>
+                            <span className={"res-grade-badge" + (g.gpa === 0 ? " fail" : "")}>
+                              GPA: {g.gpa.toFixed(2)} · {g.grade}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="res-sub-chips">
+                          {g.items.map(it => (
+                            <span key={it.subject} className={"res-sub-chip" + (it.gpa === 0 ? " fail" : "")}>
+                              <span>{it.subject}:</span>
+                              <b style={{ fontVariantNumeric: "tabular-nums" }}>
+                                {toBnNum(it.marks)}/{toBnNum(it.maxMark)}
+                              </b>
+                              <span style={{ opacity: 0.8 }}>({it.grade})</span>
+                            </span>
+                          ))}
+                        </div>
+
+                        <div className="row-actions no-print">
+                          <button type="button" className="mini-btn" onClick={() => { setViewResultMode(resExamType); setViewResultStudentId(x.id); }}>👁 ছবিসহ মার্কশিট</button>
+                          {!isStudent && <button type="button" className="mini-btn" onClick={() => openMarks(x.id, resExamType)}>✏ নম্বর যোগ / এডিট</button>}
+                          <button type="button" className="mini-btn" onClick={() => downloadResult(x, resExamType)}>⬇ ডাউনলোড</button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>;
+        })()}
 
         {mod === "fees" && <div>
           <h1>ফি ও বকেয়া</h1><p className="lede">আদায় {taka(collected)} · মোট বকেয়া {taka(dues)}</p>
@@ -4143,6 +4921,23 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
               setMod("attendance");
             }}
             toast={toast}
+          />
+        );
+      })()}
+      {viewResultStudentId && (() => {
+        const st = data.students.find(s => s.id === viewResultStudentId);
+        if (!st) return null;
+        const isCtModal = viewResultMode === "classtest";
+        return (
+          <StudentResultModal
+            student={st}
+            settings={S}
+            summary={isCtModal ? ctSummaryOf(st.id) : gpaOf(st.id)}
+            mode={viewResultMode}
+            isStudent={isStudent}
+            close={() => setViewResultStudentId(null)}
+            onEdit={() => { setViewResultStudentId(null); openMarks(st.id, viewResultMode); }}
+            onDownload={() => downloadResult(st, viewResultMode)}
           />
         );
       })()}
@@ -5892,6 +6687,107 @@ function StudentHistoryModal({ student, settings, costs, paymentHistory, attenda
   );
 }
 
+function StudentResultModal({ student, settings, summary, mode = "main", isStudent, close, onEdit, onDownload }) {
+  const printMarksheet = () => {
+    document.body.classList.add("printing-history");
+    setTimeout(() => {
+      window.print();
+      setTimeout(() => document.body.classList.remove("printing-history"), 300);
+    }, 60);
+  };
+  const isCt = mode === "classtest";
+  const items = (summary && summary.items) || [];
+  const passed = summary ? summary.gpa > 0 : false;
+  const maxPerSubject = (summary && summary.maxMark) || (isCt ? 20 : 100);
+  return (
+    <div className="modal-bg" onClick={e => { if (e.target === e.currentTarget) close(); }}>
+      <div className="modal xl hist-print-area">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+          <div>
+            <h2 style={{ margin: 0 }}>{settings.name}</h2>
+            <p className="sub" style={{ margin: "2px 0 0" }}>
+              {settings.motto || ""} · {isCt ? `শ্রেণি পরীক্ষার ছবিসহ ফলাফল শিট${summary && summary.title ? ` (${summary.title})` : ""}` : "শিক্ষার্থীর ছবিসহ একাডেমিক ফলাফল শিট"}
+            </p>
+          </div>
+          <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }} className="no-print">
+            {!isStudent && <button type="button" className="btn btn-brand btn-sm" onClick={onEdit}>✏ নম্বর যোগ / এডিট</button>}
+            <button type="button" className="btn btn-ghost btn-sm" onClick={printMarksheet}>🖨 প্রিন্ট</button>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={onDownload}>⬇ ডাউনলোড</button>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={close}>বন্ধ করুন</button>
+          </div>
+        </div>
+
+        <div className="hist-head">
+          {student.photo
+            ? <img src={student.photo} alt={student.name} style={{ width: 84, height: 96, borderRadius: 12, objectFit: "cover", border: "2.5px solid var(--brand)", flex: "none" }} />
+            : <div className="stu-ava" style={{ width: 84, height: 96, fontSize: 34 }}>{(student.name || "শ").trim().charAt(0)}</div>}
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <h3 style={{ margin: "0 0 4px", fontSize: 20 }}>{student.name}</h3>
+            <div style={{ fontSize: 14, color: "var(--ink2)" }}>
+              শ্রেণি: <b>{student.cls}</b> · শাখা: <b>{student.section || "ক"}</b> · রোল: <b style={{ fontVariantNumeric: "tabular-nums" }}>{toBnNum(student.roll)}</b>
+            </div>
+            <div style={{ fontSize: 13.5, color: "var(--muted)", marginTop: 3 }}>
+              অভিভাবক: {student.guardian || "—"} · মোবাইল: <b>{student.phone || "—"}</b>
+            </div>
+          </div>
+          {summary && (
+            <div style={{ textAlign: "right" }}>
+              <div className={"res-grade-badge" + (passed ? "" : " fail")} style={{ fontSize: 16, padding: "7px 14px" }}>
+                GPA: {summary.gpa.toFixed(2)} ({summary.grade})
+              </div>
+              <div style={{ fontSize: 12.5, marginTop: 5, fontWeight: 700, color: passed ? "var(--brand)" : "var(--danger)" }}>
+                ফলাফল: {passed ? "✓ উত্তীর্ণ" : "✗ অকৃতকার্য"}{summary.pct !== undefined ? ` (${toBnNum(summary.pct)}%)` : ""}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ক্রম</th>
+                <th>বিষয়ের নাম</th>
+                <th style={{ textAlign: "center" }}>বরাদ্দকৃত পূর্ণমান</th>
+                <th style={{ textAlign: "center" }}>প্রাপ্ত নম্বর</th>
+                <th style={{ textAlign: "center" }}>শতকরা</th>
+                <th style={{ textAlign: "center" }}>লেটার গ্রেড</th>
+                <th style={{ textAlign: "center" }}>গ্রেড পয়েন্ট</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.length === 0 && (
+                <tr><td colSpan="7" style={{ textAlign: "center", color: "var(--muted)" }}>এখনো কোনো বিষয়ের নম্বর যোগ করা হয়নি।</td></tr>
+              )}
+              {items.map((it, idx) => (
+                <tr key={it.subject}>
+                  <td style={{ fontVariantNumeric: "tabular-nums" }}>{toBnNum(idx + 1)}</td>
+                  <td><b>{it.subject}</b></td>
+                  <td style={{ textAlign: "center", fontVariantNumeric: "tabular-nums" }}>{toBnNum(it.maxMark || maxPerSubject)}</td>
+                  <td style={{ textAlign: "center", fontWeight: 700, fontVariantNumeric: "tabular-nums", color: it.gpa === 0 ? "var(--danger)" : "inherit" }}>{toBnNum(it.marks)}</td>
+                  <td style={{ textAlign: "center", fontVariantNumeric: "tabular-nums" }}>{toBnNum(it.pct)}%</td>
+                  <td style={{ textAlign: "center", fontWeight: 700, color: it.gpa === 0 ? "var(--danger)" : "var(--brand)" }}>{it.grade}</td>
+                  <td style={{ textAlign: "center", fontVariantNumeric: "tabular-nums" }}>{it.gpa.toFixed(1)}</td>
+                </tr>
+              ))}
+              {summary && (
+                <tr style={{ background: "var(--surface2)", fontWeight: 700 }}>
+                  <td colSpan="2">সর্বমোট ({toBnNum(summary.subjectCount)}টি বিষয়)</td>
+                  <td style={{ textAlign: "center", fontVariantNumeric: "tabular-nums" }}>{toBnNum(summary.maxMarks)}</td>
+                  <td style={{ textAlign: "center", fontVariantNumeric: "tabular-nums" }}>{toBnNum(summary.totalMarks)}</td>
+                  <td style={{ textAlign: "center", fontVariantNumeric: "tabular-nums" }}>{toBnNum(summary.pct)}%</td>
+                  <td style={{ textAlign: "center", color: passed ? "var(--brand)" : "var(--danger)" }}>{summary.grade}</td>
+                  <td style={{ textAlign: "center", fontVariantNumeric: "tabular-nums" }}>{summary.gpa.toFixed(2)}</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function StudentIdCardModal({ student, settings, onUpdateStudent, onUpdateSettings, onPhoto, photoErr, close, onScanInDevice, toast }) {
   const [qrUrl, setQrUrl] = useState("");
   const qrPayload = "SCHID:" + student.id;
@@ -6561,6 +7457,7 @@ function computeSliceDiff(prevSnap, nextSnap) {
     const changedRes = {};
     let resChanged = false;
     for (const sid of Object.keys(nextR)) {
+      if (sid.startsWith("ct|")) continue;
       if (prevR[sid] !== nextR[sid]) {
         changedRes[sid] = nextR[sid];
         resChanged = true;
@@ -6876,7 +7773,11 @@ function App() {
       fullChanges.attendanceTimes = cur.attendanceTimes || {};
     }
     if (cur.results && Object.keys(cur.results).length > 0) {
-      fullChanges.results = cur.results;
+      const cleanRes = {};
+      Object.entries(cur.results).forEach(([k, v]) => {
+        if (!k.startsWith("ct|")) cleanRes[k] = v;
+      });
+      if (Object.keys(cleanRes).length > 0) fullChanges.results = cleanRes;
     }
     if (cur.officeAttendance && Object.keys(cur.officeAttendance).length > 0) {
       fullChanges.officeAttendance = cur.officeAttendance;
