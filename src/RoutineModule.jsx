@@ -451,6 +451,271 @@ function ClassSubjectAssignModal({
   );
 }
 
+function AddRoutineTeacherModal({
+  allTeachers,
+  excludedIds,
+  classes,
+  allSchoolSubjectNames,
+  normalizeClassSections,
+  onSave,
+  onClose
+}) {
+  const excludedSet = useMemo(() => new Set(excludedIds || []), [excludedIds]);
+  const notInRoutineTeachers = useMemo(
+    () => (allTeachers || []).filter(t => excludedSet.has(t.id)),
+    [allTeachers, excludedSet]
+  );
+  const inRoutineTeachers = useMemo(
+    () => (allTeachers || []).filter(t => !excludedSet.has(t.id)),
+    [allTeachers, excludedSet]
+  );
+
+  const [selectedId, setSelectedId] = useState(() =>
+    notInRoutineTeachers[0] ? notInRoutineTeachers[0].id : ""
+  );
+
+  const selectedTeacher = useMemo(
+    () => (allTeachers || []).find(t => t.id === selectedId) || null,
+    [allTeachers, selectedId]
+  );
+
+  const [shortCode, setShortCode] = useState("");
+  const [primarySub, setPrimarySub] = useState("");
+  const [extraSubs, setExtraSubs] = useState([]);
+  const [teachClasses, setTeachClasses] = useState([]);
+  const [ctClass, setCtClass] = useState("");
+  const [ctSection, setCtSection] = useState("ক");
+  const [subSearchQ, setSubSearchQ] = useState("");
+
+  useEffect(() => {
+    if (!selectedTeacher) {
+      setShortCode("");
+      setPrimarySub("");
+      setExtraSubs([]);
+      setTeachClasses([]);
+      setCtClass("");
+      setCtSection("ক");
+      return;
+    }
+    setShortCode(selectedTeacher.shortCode || "");
+    setPrimarySub(selectedTeacher.subject || "");
+    setExtraSubs(Array.isArray(selectedTeacher.additionalSubjects) ? [...selectedTeacher.additionalSubjects] : []);
+    setTeachClasses(Array.isArray(selectedTeacher.teachingClasses) ? [...selectedTeacher.teachingClasses] : []);
+    setCtClass(selectedTeacher.classTeacherClass || "");
+    setCtSection(selectedTeacher.classTeacherSection || "ক");
+    setSubSearchQ("");
+  }, [selectedTeacher]);
+
+  const schoolClassNames = useMemo(
+    () => (classes || []).map(c => c.name).filter(Boolean),
+    [classes]
+  );
+
+  const ctSecOpts = useMemo(() => {
+    if (!ctClass) return ["ক", "খ", "গ"];
+    const matched = (classes || []).find(c => c.name === ctClass);
+    return matched ? normalizeClassSections(matched).map(s => s.name) : ["ক", "খ", "গ"];
+  }, [ctClass, classes, normalizeClassSections]);
+
+  const subjectChoices = useMemo(() => {
+    const base = Array.from(
+      new Set([...(allSchoolSubjectNames || []), primarySub, ...extraSubs].filter(Boolean))
+    );
+    const q = subSearchQ.trim().toLowerCase();
+    return q ? base.filter(s => s.toLowerCase().includes(q)) : base;
+  }, [allSchoolSubjectNames, primarySub, extraSubs, subSearchQ]);
+
+  const handleSubmit = e => {
+    e.preventDefault();
+    if (!selectedTeacher) return;
+    onSave({
+      teacherId: selectedTeacher.id,
+      shortCode: shortCode.trim().slice(0, 12),
+      subject: primarySub.trim() || selectedTeacher.subject || "সাধারণ",
+      additionalSubjects: Array.from(
+        new Set(extraSubs.map(s => String(s || "").trim()).filter(s => s && s !== primarySub.trim()))
+      ),
+      teachingClasses: teachClasses,
+      classTeacherClass: ctClass,
+      classTeacherSection: ctClass ? (ctSection || ctSecOpts[0] || "ক") : ""
+    });
+  };
+
+  return (
+    <div className="modal-bg" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <form className="modal wide" onSubmit={handleSubmit}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+          <div>
+            <h2>নতুন শিক্ষক যোগ করুন</h2>
+            <p className="sub" style={{ marginBottom: 10 }}>
+              ওয়েবসাইটের “শিক্ষক” তালিকা থেকে ড্রপডাউনের মাধ্যমে শিক্ষক নির্বাচন করে রুটিনে যুক্ত করুন
+            </p>
+          </div>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>বন্ধ করুন</button>
+        </div>
+
+        <div className="routine-modal-box" style={{ marginTop: 0 }}>
+          <label htmlFor="routine-add-teacher-select">শিক্ষকের নাম *</label>
+          <select
+            id="routine-add-teacher-select"
+            required
+            value={selectedId}
+            onChange={e => setSelectedId(e.target.value)}
+          >
+            <option value="">— ওয়েবসাইটের শিক্ষক তালিকা থেকে নির্বাচন করুন —</option>
+            {notInRoutineTeachers.length > 0 && (
+              <optgroup label={`রুটিন তালিকায় যুক্ত নেই (${toBnStr(notInRoutineTeachers.length)} জন)`}>
+                {notInRoutineTeachers.map(t => (
+                  <option key={t.id} value={t.id}>
+                    {t.name} ({t.teacherCode} · {t.subject})
+                  </option>
+                ))}
+              </optgroup>
+            )}
+            {inRoutineTeachers.length > 0 && (
+              <optgroup label={`ওয়েবসাইটের শিক্ষক তালিকা — রুটিনে সক্রিয় (${toBnStr(inRoutineTeachers.length)} জন)`}>
+                {inRoutineTeachers.map(t => (
+                  <option key={t.id} value={t.id}>
+                    {t.name} ({t.teacherCode} · {t.subject}) ✓
+                  </option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+          {(allTeachers || []).length === 0 && (
+            <div style={{ marginTop: 6, fontSize: "12.5px", color: "var(--danger)" }}>
+              ওয়েবসাইটের “শিক্ষক” তালিকায় কোনো শিক্ষক নেই — প্রথমে “শিক্ষক” পাতা থেকে শিক্ষক যোগ করুন।
+            </div>
+          )}
+        </div>
+
+        {selectedTeacher && (
+          <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+            <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", padding: "10px 12px", borderRadius: 8, background: "var(--surface2)", border: "1px solid var(--line)" }}>
+              {selectedTeacher.photo
+                ? <img src={selectedTeacher.photo} alt={selectedTeacher.name} className="stu-ava-sm" style={{ borderRadius: "50%" }} />
+                : <span className="stu-ava-sm" style={{ borderRadius: "50%" }}>{(selectedTeacher.name || "শ").trim().charAt(0)}</span>}
+              <div style={{ fontSize: "13px" }}>
+                <b>{selectedTeacher.name}</b> · <span>{selectedTeacher.designation}</span>
+                <div className="tabular-nums" style={{ fontSize: "12px", color: "var(--muted)" }}>
+                  আইডি: {selectedTeacher.teacherCode} · মোবাইল: {selectedTeacher.phone || "—"}
+                </div>
+              </div>
+            </div>
+
+            <div className="form-grid">
+              <div>
+                <label>প্রধান বিষয় *</label>
+                <select value={primarySub} onChange={e => setPrimarySub(e.target.value)} required>
+                  {Array.from(new Set([...(allSchoolSubjectNames || []), primarySub].filter(Boolean))).map(sb => (
+                    <option key={sb} value={sb}>{sb}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label>রুটিন শর্ট কোড (ঐচ্ছিক)</label>
+                <input
+                  value={shortCode}
+                  maxLength={12}
+                  onChange={e => setShortCode(e.target.value)}
+                  placeholder="যেমন: LR / আ.কা"
+                />
+              </div>
+              <div>
+                <label>শ্রেণি শিক্ষক</label>
+                <select
+                  value={ctClass}
+                  onChange={e => {
+                    const clsVal = e.target.value;
+                    setCtClass(clsVal);
+                    if (clsVal) {
+                      const m = (classes || []).find(c => c.name === clsVal);
+                      const secs = m ? normalizeClassSections(m).map(s => s.name) : ["ক"];
+                      if (!secs.includes(ctSection)) setCtSection(secs[0] || "ক");
+                    }
+                  }}
+                >
+                  <option value="">— শ্রেণি শিক্ষক নন —</option>
+                  {schoolClassNames.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+              <div>
+                <label>শ্রেণি শিক্ষকের শাখা</label>
+                <select value={ctSection} onChange={e => setCtSection(e.target.value)} disabled={!ctClass}>
+                  {ctSecOpts.map(sec => <option key={sec} value={sec}>{sec}</option>)}
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label>বরাদ্দকৃত শ্রেণি ({toBnStr(teachClasses.length)}টি নির্বাচিত)</label>
+              <div className="class-chip-grid">
+                {schoolClassNames.map(clsName => {
+                  const on = teachClasses.includes(clsName);
+                  return (
+                    <button
+                      key={clsName}
+                      type="button"
+                      className={`class-chip-btn ${on ? "on" : ""}`}
+                      onClick={() =>
+                        setTeachClasses(prev =>
+                          prev.includes(clsName) ? prev.filter(x => x !== clsName) : [...prev, clsName]
+                        )
+                      }
+                    >
+                      {on ? "✓ " : "+ "}{clsName}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div>
+              <label>অতিরিক্ত পাঠদান বিষয়সমূহ ({toBnStr(extraSubs.length)}টি নির্বাচিত)</label>
+              <input
+                type="search"
+                value={subSearchQ}
+                onChange={e => setSubSearchQ(e.target.value)}
+                placeholder="বিষয় খুঁজুন…"
+                style={{ marginBottom: 6, minHeight: 36 }}
+              />
+              <div className="subject-pick-grid">
+                {subjectChoices.map(sb => {
+                  const isPrimary = sb === primarySub;
+                  const on = extraSubs.includes(sb);
+                  return (
+                    <button
+                      key={sb}
+                      type="button"
+                      disabled={isPrimary}
+                      className={`class-chip-btn ${on || isPrimary ? "on" : ""}`}
+                      style={isPrimary ? { opacity: 0.7 } : undefined}
+                      onClick={() =>
+                        setExtraSubs(prev => (prev.includes(sb) ? prev.filter(x => x !== sb) : [...prev, sb]))
+                      }
+                    >
+                      {isPrimary ? `★ ${sb}` : on ? `✓ ${sb}` : `+ ${sb}`}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 9, marginTop: 16, flexWrap: "wrap" }}>
+          <button type="submit" className="btn btn-brand" style={{ flex: 1 }} disabled={!selectedTeacher}>
+            ✓ রুটিনে শিক্ষক যুক্ত ও সংরক্ষণ করুন
+          </button>
+          <button type="button" className="btn btn-ghost" onClick={onClose}>
+            বাতিল
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function RoutineSlotModal({
   initial,
   routine,
@@ -1176,11 +1441,19 @@ export default function RoutineModule({
   const routine = useMemo(() => normalizeRoutineState(data && data.routine), [data]);
   const cfg = routine.config;
   const timeline = useMemo(() => buildRoutineTimeline(cfg), [cfg]);
-  const teachers = useMemo(
+  const allTeachers = useMemo(
     () => (data.teachers || []).map(t => normalizeTeacherRecord(t, !isStudent)),
     [data.teachers, isStudent, normalizeTeacherRecord]
   );
-  const teacherById = useMemo(() => new Map(teachers.map(t => [t.id, t])), [teachers]);
+  const excludedTeacherIdSet = useMemo(
+    () => new Set(routine.excludedTeacherIds || []),
+    [routine.excludedTeacherIds]
+  );
+  const teachers = useMemo(
+    () => allTeachers.filter(t => !excludedTeacherIdSet.has(t.id)),
+    [allTeachers, excludedTeacherIdSet]
+  );
+  const teacherById = useMemo(() => new Map(allTeachers.map(t => [t.id, t])), [allTeachers]);
 
   const allSectionsMeta = useMemo(() => {
     const out = [];
@@ -1202,7 +1475,7 @@ export default function RoutineModule({
 
   const allSectionKeys = useMemo(() => allSectionsMeta.map(s => s.secKey), [allSectionsMeta]);
   const secMetaByKey = useMemo(() => new Map(allSectionsMeta.map(s => [s.secKey, s])), [allSectionsMeta]);
-  const teacherShortCodeMap = useMemo(() => buildTeacherShortCodeMap(teachers), [teachers]);
+  const teacherShortCodeMap = useMemo(() => buildTeacherShortCodeMap(allTeachers), [allTeachers]);
   const classSectionCounts = useMemo(() => {
     const m = {};
     allSectionsMeta.forEach(s => {
@@ -1254,6 +1527,7 @@ export default function RoutineModule({
   const [editCodeInput, setEditCodeInput] = useState("");
   const [confirmActionKey, setConfirmActionKey] = useState(null); // `clear:${tid}` | `del:${tid}`
   const [classAssignModal, setClassAssignModal] = useState(null); // { teacherId, focusClassName? }
+  const [addRoutineTeacherOpen, setAddRoutineTeacherOpen] = useState(false);
 
   // Slot Editor modal state
   const [slotModal, setSlotModal] = useState(null);
@@ -1317,7 +1591,7 @@ export default function RoutineModule({
   const runSmartGenerate = () => {
     const generated = generateSmartMasterRoutine({
       classes: data.classes || [],
-      teachers: data.teachers || [],
+      teachers,
       subjects: data.subjects || [],
       config: cfg,
       normalizeClassSections,
@@ -1327,7 +1601,7 @@ export default function RoutineModule({
     });
     const postCheck = getConsecutiveStreakMap(generated, timeline, allSectionKeys);
     const unapprovedLeft = Object.values(postCheck.violations).flat().filter(r => !r.approved).length;
-    updateRoutine(generated);
+    updateRoutine({ ...generated, excludedTeacherIds: routine.excludedTeacherIds || [] });
     if (unapprovedLeft > 0) {
       toast(`রুটিন তৈরি হয়েছে — তবে শিক্ষক সংকটের কারণে ${toBnStr(unapprovedLeft)}টি ক্ষেত্রে টানা ৩+ ক্লাস সতর্কতা রয়েছে (অ্যাডমিন অনুমোদন প্রয়োজন)।`, true);
     } else {
@@ -1340,11 +1614,11 @@ export default function RoutineModule({
       routine,
       timeline,
       allSectionsMeta,
-      teachers: data.teachers || [],
+      teachers,
       normalizeTeacherRecord,
       teacherCoversSubject
     });
-    updateRoutine(nextRoutine);
+    updateRoutine({ ...nextRoutine, excludedTeacherIds: routine.excludedTeacherIds || [] });
     if (fixedCount > 0) {
       toast(`অন্য শিক্ষকদের সাথে অটো-সমন্বয় করে ${toBnStr(fixedCount)}টি টানা ৩+ ক্লাস সমস্যার সমাধান হয়েছে!`);
     } else {
@@ -1505,6 +1779,55 @@ export default function RoutineModule({
     });
     setConfirmActionKey(null);
     toast("উক্ত শিক্ষকের সকল বরাদ্দকৃত ক্লাস রুটিন থেকে খালি করা হয়েছে");
+  };
+
+  const removeTeacherFromRoutineList = teacherId => {
+    const tObj = teacherById.get(teacherId);
+    updateRoutine(prev => {
+      const nextEntries = {};
+      Object.entries(prev.entries || {}).forEach(([k, e]) => {
+        if (!e) return;
+        const remain = (e.items || []).filter(it => it.teacherId !== teacherId);
+        if (remain.length > 0) nextEntries[k] = { ...e, items: remain };
+      });
+      const prevEx = Array.isArray(prev.excludedTeacherIds) ? prev.excludedTeacherIds : [];
+      const nextEx = prevEx.includes(teacherId) ? prevEx : [...prevEx, teacherId];
+      return { ...prev, entries: nextEntries, excludedTeacherIds: nextEx };
+    });
+    setConfirmActionKey(null);
+    if (selectedTeacherId === teacherId) setSelectedTeacherId("সব");
+    toast(`${tObj ? tObj.name : "শিক্ষক"}-কে রুটিন তালিকা থেকে রিমুভ করা হয়েছে (ওয়েবসাইটের “শিক্ষক” তালিকায় অক্ষত রয়েছে)`);
+  };
+
+  const handleAddTeacherToRoutine = payload => {
+    const tObj = teacherById.get(payload.teacherId);
+    updateRoutine(prev => ({
+      ...prev,
+      excludedTeacherIds: (prev.excludedTeacherIds || []).filter(id => id !== payload.teacherId)
+    }));
+    setData(prev => ({
+      ...prev,
+      teachers: (prev.teachers || []).map(rawT => {
+        if (rawT.id !== payload.teacherId) return rawT;
+        const t = normalizeTeacherRecord(rawT, true);
+        return {
+          ...t,
+          shortCode: payload.shortCode,
+          subject: payload.subject,
+          additionalSubjects: payload.additionalSubjects,
+          teachingClasses: payload.teachingClasses
+        };
+      })
+    }));
+    if (onAssignClassTeacher && tObj) {
+      if (payload.classTeacherClass) {
+        onAssignClassTeacher(payload.teacherId, payload.classTeacherClass, payload.classTeacherSection || "ক");
+      } else if (tObj.classTeacherClass) {
+        onAssignClassTeacher("", tObj.classTeacherClass, tObj.classTeacherSection || "ক");
+      }
+    }
+    setAddRoutineTeacherOpen(false);
+    toast(`${tObj ? tObj.name : "শিক্ষক"}-কে রুটিনের শিক্ষক তালিকায় যুক্ত করা হয়েছে!`);
   };
 
   const addSubjectToTeacherInline = (teacherId, rawSub) => {
@@ -2088,7 +2411,7 @@ export default function RoutineModule({
             <div>
               <h3 style={{ margin: 0 }}>শিক্ষক তালিকা, বরাদ্দকৃত বিষয় ও পুরো সপ্তাহে মোট ক্লাসের সংখ্যা</h3>
               <p style={{ margin: "2px 0 0", fontSize: "12.5px", color: "var(--muted)" }}>
-                রুটিন তৈরির সময় থেকেই প্রতিটি শিক্ষকের বিষয়, শ্রেণি শিক্ষক দায়িত্ব ও সাপ্তাহিক ক্লাস সংখ্যা দেখা, এডিট, যোগ ও ডিলিট করা যাবে।
+                রুটিন তৈরির সময় থেকেই প্রতিটি শিক্ষকের শ্রেণি শিক্ষক দায়িত্ব, বরাদ্দকৃত শ্রেণি, বিষয় ও সাপ্তাহিক ক্লাস সংখ্যা দেখা, যোগ ও রুটিন থেকে রিমুভ করা যাবে (ওয়েবসাইটের মূল “শিক্ষক” তালিকা থেকে কখনোই ডিলিট হবে না)।
               </p>
             </div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -2099,11 +2422,13 @@ export default function RoutineModule({
                 value={workloadQ}
                 onChange={e => setWorkloadQ(e.target.value)}
               />
-              {onNewTeacher && (
-                <button type="button" className="btn btn-brand btn-sm" onClick={onNewTeacher}>
-                  + নতুন শিক্ষক যোগ
-                </button>
-              )}
+              <button
+                type="button"
+                className="btn btn-brand btn-sm"
+                onClick={() => setAddRoutineTeacherOpen(true)}
+              >
+                + নতুন শিক্ষক যোগ
+              </button>
             </div>
           </div>
 
@@ -2356,24 +2681,29 @@ export default function RoutineModule({
                               </button>
                             )
                           )}
-                          {onDeleteTeacher && (
-                            delConfirm ? (
+                          {delConfirm ? (
+                            <span style={{ display: "inline-flex", gap: 4 }}>
                               <button
                                 type="button"
                                 className="mini-btn red"
-                                onClick={() => {
-                                  clearTeacherFromRoutine(t.id);
-                                  onDeleteTeacher(t.id);
-                                  setConfirmActionKey(null);
-                                }}
+                                onClick={() => removeTeacherFromRoutineList(t.id)}
+                                title="শুধুমাত্র রুটিন তালিকা থেকে রিমুভ করুন (মূল শিক্ষক তালিকা থেকে মুছবে না)"
                               >
-                                মুছুন নিশ্চিত?
+                                রিমুভ নিশ্চিত?
                               </button>
-                            ) : (
-                              <button type="button" className="mini-btn red" onClick={() => setConfirmActionKey(`del:${t.id}`)}>
-                                মুছুন
+                              <button type="button" className="mini-btn" onClick={() => setConfirmActionKey(null)}>
+                                না
                               </button>
-                            )
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              className="mini-btn red"
+                              onClick={() => setConfirmActionKey(`del:${t.id}`)}
+                              title="শুধুমাত্র রুটিন তালিকা থেকে রিমুভ করুন (ওয়েবসাইটের মূল শিক্ষক তালিকা থেকে মুছবে না)"
+                            >
+                              রিমুভ
+                            </button>
                           )}
                         </div>
                       </td>
@@ -2484,7 +2814,7 @@ export default function RoutineModule({
 
                     <tbody>
                       {visibleMasterSections.map((secMeta, rowIdx) => {
-                        const ctTeacher = teachers.find(
+                        const ctTeacher = allTeachers.find(
                           t => t.classTeacherClass === secMeta.clsName && (t.classTeacherSection || "ক") === secMeta.secName
                         );
                         const hasMultiSec = (classSectionCounts[secMeta.clsName] || 1) > 1;
@@ -2679,7 +3009,7 @@ export default function RoutineModule({
                       </thead>
                       <tbody>
                         {visibleMasterSections.map((secMeta, rowIdx) => {
-                          const ctTeacher = teachers.find(
+                          const ctTeacher = allTeachers.find(
                             t => t.classTeacherClass === secMeta.clsName && (t.classTeacherSection || "ক") === secMeta.secName
                           );
                           const { coveredBy, effectiveSpan } = getCoveredPeriodsForRow(routine.entries, day, secMeta.secKey, timeline);
@@ -3046,7 +3376,7 @@ export default function RoutineModule({
 
           <div className="routine-print-area">
             {visibleClassSectionsForView.map(secMeta => {
-              const ctTeacher = teachers.find(
+              const ctTeacher = allTeachers.find(
                 t => t.classTeacherClass === secMeta.clsName && (t.classTeacherSection || "ক") === secMeta.secName
               );
 
@@ -3063,7 +3393,7 @@ export default function RoutineModule({
                         <span>
                           <b>শ্রেণি শিক্ষক:</b>{" "}
                           {ctTeacher
-                            ? <b style={{ color: "var(--brand-dark)" }}>{ctTeacher.name} (মোবাইল: {ctTeacher.phone || "—"})</b>
+                            ? <b style={{ color: "var(--brand)" }}>{ctTeacher.name} (মোবাইল: {ctTeacher.phone || "—"})</b>
                             : <span style={{ color: "var(--muted)" }}>নির্ধারিত নয়</span>}
                         </span>
                       </div>
@@ -3077,7 +3407,7 @@ export default function RoutineModule({
                           onChange={e => onAssignClassTeacher && onAssignClassTeacher(e.target.value, secMeta.clsName, secMeta.secName)}
                         >
                           <option value="">— শ্রেণি শিক্ষক পরিবর্তন —</option>
-                          {teachers.map(t => (
+                          {allTeachers.map(t => (
                             <option key={t.id} value={t.id}>{t.name} ({t.phone})</option>
                           ))}
                         </select>
@@ -3234,6 +3564,18 @@ export default function RoutineModule({
           weeklyPeriods={(teacherStats[classAssignModal.teacherId] || { weeklyPeriods: 0 }).weeklyPeriods}
           onSave={saveTeacherClassAssignments}
           onClose={() => setClassAssignModal(null)}
+        />
+      )}
+
+      {addRoutineTeacherOpen && (
+        <AddRoutineTeacherModal
+          allTeachers={allTeachers}
+          excludedIds={routine.excludedTeacherIds || []}
+          classes={data.classes || []}
+          allSchoolSubjectNames={allSchoolSubjectNames}
+          normalizeClassSections={normalizeClassSections}
+          onSave={handleAddTeacherToRoutine}
+          onClose={() => setAddRoutineTeacherOpen(false)}
         />
       )}
     </div>

@@ -324,7 +324,10 @@ export function normalizeRoutineState(raw) {
     const clean = normalizeRoutineEntry(v);
     if (clean) entries[k] = clean;
   }
-  return { config, entries };
+  const excludedTeacherIds = Array.isArray(raw && raw.excludedTeacherIds)
+    ? Array.from(new Set(raw.excludedTeacherIds.map(x => String(x || "").trim()).filter(Boolean)))
+    : [];
+  return { config, entries, excludedTeacherIds };
 }
 
 export function getCoveredPeriodsForRow(entries, day, secKey, timeline) {
