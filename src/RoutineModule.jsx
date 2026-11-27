@@ -1237,7 +1237,6 @@ export default function RoutineModule({
   const [showCustomizer, setShowCustomizer] = useState(false);
   const [showPeriodDurations, setShowPeriodDurations] = useState(false);
   const [showTeacherPanel, setShowTeacherPanel] = useState(true);
-  const [confirmAutoGen, setConfirmAutoGen] = useState(false);
   const [confirmClearAll, setConfirmClearAll] = useState(false);
 
   // Filters per view
@@ -1329,7 +1328,6 @@ export default function RoutineModule({
     const postCheck = getConsecutiveStreakMap(generated, timeline, allSectionKeys);
     const unapprovedLeft = Object.values(postCheck.violations).flat().filter(r => !r.approved).length;
     updateRoutine(generated);
-    setConfirmAutoGen(false);
     if (unapprovedLeft > 0) {
       toast(`রুটিন তৈরি হয়েছে — তবে শিক্ষক সংকটের কারণে ${toBnStr(unapprovedLeft)}টি ক্ষেত্রে টানা ৩+ ক্লাস সতর্কতা রয়েছে (অ্যাডমিন অনুমোদন প্রয়োজন)।`, true);
     } else {
@@ -1771,6 +1769,14 @@ export default function RoutineModule({
           <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
             <button
               type="button"
+              className="btn btn-accent btn-sm"
+              onClick={runSmartGenerate}
+              title="সকল শ্রেণি, শিক্ষক ও বরাদ্দকৃত বিষয় অনুযায়ী স্বয়ংক্রিয়ভাবে সম্পূর্ণ রুটিন তৈরি করুন"
+            >
+              ⚡ জেনারেট
+            </button>
+            <button
+              type="button"
               className={`mini-btn ${showCustomizer ? "active-chip" : ""}`}
               onClick={() => setShowCustomizer(v => !v)}
             >
@@ -1811,22 +1817,13 @@ export default function RoutineModule({
               </p>
             </div>
             <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
-              {confirmAutoGen ? (
-                <span style={{ display: "inline-flex", gap: 5, alignItems: "center" }}>
-                  <button type="button" className="mini-btn" style={{ background: "var(--brand)", color: "#fff" }} onClick={runSmartGenerate}>
-                    নিশ্চিত অটো-তৈরি করুন
-                  </button>
-                  <button type="button" className="mini-btn" onClick={() => setConfirmAutoGen(false)}>বাতিল</button>
-                </span>
-              ) : (
-                <button
-                  type="button"
-                  className="btn btn-accent btn-sm"
-                  onClick={() => totalScheduledSlots > 0 ? setConfirmAutoGen(true) : runSmartGenerate()}
-                >
-                  এই সময়সূচীতে অটো রুটিন তৈরি করুন
-                </button>
-              )}
+              <button
+                type="button"
+                className="btn btn-accent btn-sm"
+                onClick={runSmartGenerate}
+              >
+                ⚡ জেনারেট (এই সময়সূচীতে)
+              </button>
 
               {confirmClearAll ? (
                 <span style={{ display: "inline-flex", gap: 5, alignItems: "center" }}>

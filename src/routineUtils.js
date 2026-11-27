@@ -916,9 +916,16 @@ export function generateSmartMasterRoutine({
     // ২) অন্য শিক্ষকের সাথে সমন্বয়: candT-এর আগের ১ম/২য় ক্লাসটি যদি অন্য কোনো ফ্রি-নন-স্ট্রেক শিক্ষককে দেওয়া যায়
     for (let tries = 0; tries < pool.length; tries++) {
       const candSub = pool[(dIdx * 3 + pIdx + sIdx + tries) % pool.length];
-      const busyButFreeNow = normTeachers.find(
-        t => teacherCoversSubject(t, candSub.name) && isTeacherFree(day, p, 1, t.id)
-      );
+      const busyButFreeNow =
+        normTeachers.find(
+          t => teacherCoversClassSubject(t, meta.clsName, candSub.name) && isTeacherFree(day, p, 1, t.id)
+        ) ||
+        normTeachers.find(
+          t => teacherCoversSubject(t, candSub.name) && (t.teachingClasses || []).includes(meta.clsName) && isTeacherFree(day, p, 1, t.id)
+        ) ||
+        normTeachers.find(
+          t => teacherCoversSubject(t, candSub.name) && isTeacherFree(day, p, 1, t.id)
+        );
       if (!busyButFreeNow) continue;
 
       const sess = sessionByPeriod.get(p);
