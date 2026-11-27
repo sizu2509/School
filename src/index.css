@@ -445,11 +445,58 @@ code.inline{font-family:var(--mono);background:var(--surface2);padding:1px 6px;b
   .routine-break-row,.routine-split-row{grid-template-columns:1fr}
 }
 
+/* মাস্টার Summary Timetable Matrix (আপলোডকৃত PDF ফরমেট) */
+.routine-summary-card{padding:14px 16px}
+.routine-sum-sheet-head{text-align:center;margin-bottom:10px}
+.routine-sum-sheet-head .inst{font-size:12.5px;color:var(--ink2);font-weight:600}
+.routine-sum-sheet-head h2{margin:2px 0 0;font-size:clamp(18px,2.2vw,24px);color:var(--ink);font-weight:700}
+.routine-summary-wrap{overflow-x:auto;border:2px solid var(--ink);border-radius:4px;background:var(--surface)}
+.routine-summary-table{width:100%;border-collapse:collapse;font-size:11px;background:var(--surface)}
+.routine-summary-table th,.routine-summary-table td{border:1px solid var(--line);padding:2px 3px}
+.routine-summary-table .day-end{border-right:2px solid var(--ink)!important}
+.routine-sum-corner-th{background:var(--surface2);color:var(--ink);font-weight:700;font-size:12px;text-align:left!important;padding:6px 8px!important;min-width:90px;border-right:2px solid var(--ink)!important;border-bottom:2px solid var(--ink)!important}
+.routine-sum-day-th{background:var(--surface2);color:var(--ink);text-align:center!important;font-size:13px;font-weight:700;padding:5px 4px!important;border-bottom:1.5px solid var(--ink)!important}
+.routine-sum-p-th{background:var(--surface);color:var(--ink);text-align:center!important;min-width:52px;padding:3px 2px!important;border-bottom:2px solid var(--ink)!important;vertical-align:middle!important}
+.routine-sum-p-th div{font-size:12px;font-weight:700;line-height:1.15}
+.routine-sum-p-th small,.routine-sum-brk-th small{display:block;font-size:9px;font-weight:600;color:var(--muted);line-height:1.15}
+.routine-sum-brk-th{background:var(--accent-soft)!important;color:var(--ink);text-align:center!important;width:28px;min-width:26px;padding:3px 2px!important;border-bottom:2px solid var(--ink)!important;vertical-align:middle!important}
+.routine-sum-brk-th div{font-size:9.5px;font-weight:700;line-height:1.1}
+.routine-sum-cls-td{background:var(--surface2);color:var(--ink);font-weight:700;font-size:12.5px;padding:6px 8px!important;vertical-align:middle!important;white-space:nowrap;border-right:2px solid var(--ink)!important;position:sticky;left:0;z-index:2}
+.routine-sum-brk-td{background:var(--accent-soft);text-align:center!important;vertical-align:middle!important;width:28px;min-width:26px;padding:4px 2px!important}
+.routine-sum-brk-rot{writing-mode:vertical-rl;transform:rotate(180deg);font-size:11.5px;font-weight:700;color:var(--ink);white-space:nowrap;margin:0 auto;letter-spacing:.2px}
+.routine-sum-cell{min-width:52px;height:52px;background:var(--surface);vertical-align:middle!important;transition:background .12s}
+.routine-sum-cell.editable{cursor:pointer}
+.routine-sum-cell.editable:hover{background:var(--brand-soft)}
+.routine-sum-cell.empty-cell{text-align:center!important;background:var(--surface)}
+.routine-sum-empty{font-size:12px;color:var(--muted);opacity:.45}
+.routine-sum-cell.common{background:rgba(59,130,246,.08)}
+.routine-sum-cell.merged{background:var(--brand-soft)}
+.routine-sum-cell.clash{background:var(--danger-soft)!important;box-shadow:inset 0 0 0 2px var(--danger)}
+.routine-sum-cell.streak-warn{background:var(--accent-soft)!important;box-shadow:inset 0 0 0 2px var(--accent)}
+.routine-sum-cell.streak-approved{box-shadow:inset 0 0 0 1.5px var(--brand)}
+.routine-sum-cell-box{display:flex;flex-direction:column;justify-content:space-between;min-height:48px;position:relative;padding:1px 2px}
+.routine-sum-badges{display:flex;gap:2px;justify-content:flex-start;flex-wrap:wrap}
+.sum-mark{font-size:8.5px;font-weight:700;padding:0 3px;border-radius:3px;line-height:1.25}
+.sum-mark.common{background:#dbeafe;color:#1e40af}
+.sum-mark.merged{background:var(--brand-soft);color:var(--brand-dark)}
+.sum-mark.clash{background:var(--danger);color:#fff}
+.sum-mark.warn{background:var(--accent);color:#fff}
+.routine-sum-sub{font-size:10px;line-height:1.15;font-weight:600;color:var(--ink);text-align:center;margin:auto 0;word-break:break-word;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.routine-sum-tcode{font-size:9.5px;font-weight:700;color:var(--brand);text-align:right;line-height:1.1;margin-top:2px;white-space:nowrap}
+.routine-sum-legend{margin-top:10px;padding-top:8px;border-top:1px solid var(--line);font-size:11.5px;color:var(--ink2);line-height:1.55}
+.routine-sum-footer{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:6px;font-size:11px;color:var(--muted)}
+
 @media print{
+  @page{size:landscape;margin:7mm}
   body.printing-routine *{visibility:hidden}
   body.printing-routine .routine-print-area,
   body.printing-routine .routine-print-area *{visibility:visible}
-  body.printing-routine .routine-print-area{position:fixed;inset:0;padding:14px;background:#fff;color:#111;overflow:visible}
+  body.printing-routine .routine-print-area{position:fixed;inset:0;padding:6px;background:#fff;color:#111;overflow:visible}
   body.printing-routine .no-print{display:none!important}
-  body.printing-routine .card-block{box-shadow:none;border:1px solid #cbd5e1;break-inside:avoid;margin-bottom:14px}
+  body.printing-routine .card-block{box-shadow:none;border:none;padding:0;margin-bottom:10px}
+  body.printing-routine .routine-summary-wrap{overflow:visible!important;border-color:#000}
+  body.printing-routine .routine-sum-cls-td{position:static;background:#f8fafc!important;color:#000!important}
+  body.printing-routine .routine-sum-cell{height:42px;min-width:0}
+  body.printing-routine .routine-sum-sub{font-size:9px;color:#000!important}
+  body.printing-routine .routine-sum-tcode{font-size:8.5px;color:#000!important}
 }

@@ -20,7 +20,8 @@ import {
   computeTeacherWeeklyStats,
   deriveTeacherDayRow,
   generateSmartMasterRoutine,
-  autoCoordinateRoutineViolations
+  autoCoordinateRoutineViolations,
+  buildTeacherShortCodeMap
 } from "./routineUtils.js";
 
 function escapeHtml(v) {
@@ -770,6 +771,14 @@ export default function RoutineModule({
 
   const allSectionKeys = useMemo(() => allSectionsMeta.map(s => s.secKey), [allSectionsMeta]);
   const secMetaByKey = useMemo(() => new Map(allSectionsMeta.map(s => [s.secKey, s])), [allSectionsMeta]);
+  const teacherShortCodeMap = useMemo(() => buildTeacherShortCodeMap(teachers), [teachers]);
+  const classSectionCounts = useMemo(() => {
+    const m = {};
+    allSectionsMeta.forEach(s => {
+      m[s.clsName] = (m[s.clsName] || 0) + 1;
+    });
+    return m;
+  }, [allSectionsMeta]);
 
   const clashMap = useMemo(
     () => findTeacherClashes(routine, timeline, allSectionKeys),
@@ -793,6 +802,7 @@ export default function RoutineModule({
 
   // View controls
   const [activeTab, setActiveTab] = useState("master"); // master | teacher | class
+  const [masterLayout, setMasterLayout] = useState("summary"); // summary (PDF format) | detailed
   const [showCustomizer, setShowCustomizer] = useState(false);
   const [showPeriodDurations, setShowPeriodDurations] = useState(false);
   const [showTeacherPanel, setShowTeacherPanel] = useState(true);
@@ -810,6 +820,8 @@ export default function RoutineModule({
   const [workloadQ, setWorkloadQ] = useState("");
   const [subAddForTeacherId, setSubAddForTeacherId] = useState(null);
   const [subAddInput, setSubAddInput] = useState("");
+  const [editCodeForTeacherId, setEditCodeForTeacherId] = useState(null);
+  const [editCodeInput, setEditCodeInput] = useState("");
   const [confirmActionKey, setConfirmActionKey] = useState(null); // `clear:${tid}` | `del:${tid}`
 
   // Slot Editor modal state
@@ -1079,6 +1091,21 @@ export default function RoutineModule({
     toast(`"${subName}" বিষয় তালিকা থেকে সরানো হয়েছে`);
   };
 
+  const saveTeacherShortCodeInline = (teacherId, rawCode) => {
+    const clean = String(rawCode || "").trim().slice(0, 12);
+    setData(prev => ({
+      ...prev,
+      teachers: (prev.teachers || []).map(rawT => {
+        if (rawT.id !== teacherId) return rawT;
+        const t = normalizeTeacherRecord(rawT, true);
+        return { ...t, shortCode: clean };
+      })
+    }));
+    setEditCodeForTeacherId(null);
+    setEditCodeInput("");
+    toast(clean ? `শিক্ষকের শর্ট কোড "${clean}" সংরক্ষিত হয়েছে` : "শিক্ষকের স্বয়ংক্রিয় শর্ট কোড চালু হয়েছে");
+  };
+
   const triggerPrintRoutine = () => {
     document.body.classList.add("printing-routine");
     setTimeout(() => window.print(), 60);
@@ -1089,31 +1116,51 @@ export default function RoutineModule({
     if (!area) return;
     const titleLabel =
       activeTab === "master"
-        ? "মাস্টার ক্লাস রুটিন"
+        ? "মাস্টার ক্লাস রুটিন (Summary Timetable)"
         : activeTab === "teacher"
           ? "শিক্ষক ভিত্তিক ক্লাস রুটিন"
           : "শ্রেণি ভিত্তিক ক্লাস রুটিন";
+    const isSummaryMaster = activeTab === "master" && masterLayout === "summary";
     const html = `<!doctype html>
 <html lang="bn">
 <head>
 <meta charset="utf-8" />
 <title>${escapeHtml((settings && settings.name) || "স্কুল")} — ${escapeHtml(titleLabel)}</title>
 <style>
-  body{font-family:'Noto Sans Bengali','Segoe UI',sans-serif;color:#111;margin:20px;background:#fff}
-  h1,h2,h3{margin:0 0 6px;color:#123f24}
-  .meta{color:#4b5563;font-size:13px;margin-bottom:14px}
-  .card-block{border:1px solid #cbd5e1;border-radius:10px;padding:14px;margin-bottom:18px;page-break-inside:avoid}
-  table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px}
-  th,td{border:1px solid #cbd5e1;padding:6px 8px;vertical-align:top;text-align:left}
+  @page{size:${isSummaryMaster ? "A4 landscape" : "auto"};margin:7mm}
+  *{box-sizing:border-box}
+  body{font-family:'Noto Sans Bengali','Hind Siliguri','Segoe UI',sans-serif;color:#111;margin:14px;background:#fff}
+  h1,h2,h3{margin:0 0 4px;color:#111}
+  .meta{color:#4b5563;font-size:12px;margin-bottom:10px}
+  .card-block{border:1px solid #cbd5e1;border-radius:8px;padding:10px;margin-bottom:14px;page-break-inside:avoid}
+  table{width:100%;border-collapse:collapse;font-size:11px;margin-top:6px}
+  th,td{border:1px solid #64748b;padding:4px 5px;vertical-align:top;text-align:left}
   th{background:#f1f5f9;font-weight:700;text-align:center}
-  .break-col{background:#fef3c7;color:#92400e;text-align:center;font-weight:700;width:72px}
+  .routine-sum-sheet-head{text-align:center;margin-bottom:8px}
+  .routine-sum-sheet-head .inst{font-size:12px;font-weight:600;color:#334155}
+  .routine-sum-sheet-head h2{font-size:20px;margin:2px 0 0;font-weight:700}
+  .routine-summary-table{border:2px solid #0f172a;table-layout:auto}
+  .routine-summary-table th,.routine-summary-table td{border:1px solid #94a3b8;padding:2px 3px}
+  .routine-summary-table .day-end{border-right:2px solid #0f172a!important}
+  .routine-sum-day-th{font-size:13px;background:#f8fafc;border-bottom:1px solid #0f172a!important}
+  .routine-sum-p-th div{font-size:11px;font-weight:700}
+  .routine-sum-p-th small,.routine-sum-brk-th small{display:block;font-size:8.5px;line-height:1.15;color:#334155}
+  .routine-sum-brk-th{background:#fef3c7!important;width:24px}
+  .routine-sum-brk-td{background:#fffbeb;vertical-align:middle!important;text-align:center!important;width:24px;padding:2px!important}
+  .routine-sum-brk-rot{writing-mode:vertical-rl;transform:rotate(180deg);font-weight:700;font-size:11px;color:#0f172a;white-space:nowrap;margin:0 auto}
+  .routine-sum-cls-td{font-weight:700;font-size:12px;vertical-align:middle!important;background:#f8fafc;min-width:74px;white-space:nowrap}
+  .routine-sum-cell{height:46px;min-width:46px;vertical-align:middle!important}
+  .routine-sum-cell-box{display:flex;flex-direction:column;justify-content:space-between;min-height:42px;text-align:center}
+  .routine-sum-sub{font-size:10px;line-height:1.15;font-weight:600;margin:auto 0;word-break:break-word}
+  .routine-sum-tcode{font-size:9.5px;font-weight:700;text-align:right;color:#0f172a;line-height:1.1;margin-top:2px}
+  .routine-sum-legend{margin-top:8px;font-size:10.5px;color:#334155;line-height:1.5}
+  .routine-sum-footer{display:flex;justify-content:space-between;margin-top:6px;font-size:10px;color:#475569}
   .no-print,button,select,input{display:none!important}
-  @media print{body{margin:10px}}
+  @media print{body{margin:0}}
 </style>
 </head>
 <body>
-  <h1>${escapeHtml((settings && settings.name) || "বিদ্যালয়")}</h1>
-  <div class="meta">${escapeHtml((settings && settings.address) || "")} · ${escapeHtml(titleLabel)}</div>
+  ${isSummaryMaster ? "" : `<h1>${escapeHtml((settings && settings.name) || "বিদ্যালয়")}</h1><div class="meta">${escapeHtml((settings && settings.address) || "")} · ${escapeHtml(titleLabel)}</div>`}
   ${area.innerHTML}
 </body>
 </html>`;
@@ -1633,8 +1680,36 @@ export default function RoutineModule({
                             >
                               {t.name}
                             </button>
-                            <div className="tabular-nums" style={{ fontSize: "12px", color: "var(--muted)" }}>
-                              {t.teacherCode} · {t.phone || "মোবাইল নেই"}
+                            <div className="tabular-nums" style={{ fontSize: "12px", color: "var(--muted)", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginTop: 2 }}>
+                              <span>{t.teacherCode} · {t.phone || "মোবাইল নেই"}</span>
+                              <span>·</span>
+                              {editCodeForTeacherId === t.id ? (
+                                <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+                                  <input
+                                    style={{ width: 76, minHeight: 24, padding: "1px 5px", fontSize: "11.5px" }}
+                                    value={editCodeInput}
+                                    maxLength={12}
+                                    onChange={e => setEditCodeInput(e.target.value)}
+                                    placeholder="LR / নু.আ"
+                                    autoFocus
+                                  />
+                                  <button type="button" className="mini-btn" style={{ minHeight: 24, padding: "1px 6px", fontSize: "11px" }} onClick={() => saveTeacherShortCodeInline(t.id, editCodeInput)}>
+                                    সেভ
+                                  </button>
+                                  <button type="button" className="mini-btn" style={{ minHeight: 24, padding: "1px 6px", fontSize: "11px" }} onClick={() => setEditCodeForTeacherId(null)}>
+                                    ×
+                                  </button>
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => { setEditCodeForTeacherId(t.id); setEditCodeInput(t.shortCode || teacherShortCodeMap.get(t.id) || ""); }}
+                                  style={{ background: "none", border: "none", padding: 0, fontSize: "11.5px", fontWeight: 700, color: "var(--brand-dark)", textDecoration: "underline dotted" }}
+                                  title="মাস্টার রুটিনে দেখানো শিক্ষকের শর্ট কোড পরিবর্তন করুন"
+                                >
+                                  কোড: {teacherShortCodeMap.get(t.id) || "—"}
+                                </button>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -1804,6 +1879,22 @@ export default function RoutineModule({
       {activeTab === "master" && (
         <div>
           <div className="toolbar no-print">
+            <div className="routine-tabs" role="group" aria-label="মাস্টার রুটিন ফরমেট">
+              <button
+                type="button"
+                className={`routine-tab-btn ${masterLayout === "summary" ? "on" : ""}`}
+                onClick={() => setMasterLayout("summary")}
+              >
+                মাস্টার শীট (PDF ফরমেট)
+              </button>
+              <button
+                type="button"
+                className={`routine-tab-btn ${masterLayout === "detailed" ? "on" : ""}`}
+                onClick={() => setMasterLayout("detailed")}
+              >
+                দিনভিত্তিক বিস্তারিত
+              </button>
+            </div>
             <select style={{ maxWidth: 180 }} value={masterDayFilter} onChange={e => setMasterDayFilter(e.target.value)}>
               <option value="সব">সকল দিন ({toBnStr(cfg.days.length)} দিন)</option>
               {cfg.days.map(d => <option key={d} value={d}>{d}</option>)}
@@ -1814,177 +1905,209 @@ export default function RoutineModule({
             </select>
             <span className="sp"></span>
             <span style={{ fontSize: "12.5px", color: "var(--muted)" }}>
-              {isStudent ? "শ্রেণি ও পিরিয়ড অনুযায়ী সম্পূর্ণ স্কুলের সময়সূচী" : "যেকোনো ঘরে ক্লিক করে বিষয়, শিক্ষক, স্প্লিট গ্রুপ বা কমন ক্লাস সম্পাদনা করুন"}
+              {isStudent ? "শ্রেণি, বার ও পিরিয়ড অনুযায়ী মাস্টার ক্লাস রুটিন" : "যেকোনো ঘরে ক্লিক করে বিষয়, শিক্ষক, স্প্লিট গ্রুপ বা কমন ক্লাস সম্পাদনা করুন"}
             </span>
           </div>
 
           <div className="routine-print-area">
-            {visibleDays.map(day => (
-              <div className="card card-block" key={day} style={{ marginBottom: 16 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
-                  <h3 style={{ margin: 0 }}>{day} — মাস্টার ক্লাস রুটিন</h3>
-                  <span style={{ fontSize: "12.5px", color: "var(--muted)" }}>
-                    শুরু: {startTimeFormatted} · মোট {toBnStr(cfg.periodsPerDay)} পিরিয়ড
-                  </span>
+            {masterLayout === "summary" ? (
+              <div className="card card-block routine-summary-card">
+                <div className="routine-sum-sheet-head">
+                  <div className="inst">
+                    {(settings && settings.name) || "বিদ্যালয়"}
+                    {settings && settings.address ? `, ${settings.address}` : ""}
+                  </div>
+                  <h2>মাস্টার ক্লাস রুটিন (Summary Timetable of Classes)</h2>
                 </div>
-                <div className="table-wrap">
-                  <table className="routine-table">
+
+                <div className="routine-summary-wrap">
+                  <table className="routine-summary-table">
                     <thead>
                       <tr>
-                        <th style={{ minWidth: 155, textAlign: "left" }}>শ্রেণি ও শাখা</th>
-                        {timeline.map((slot, idx) =>
-                          slot.type === "break" ? (
-                            <th key={`b-${idx}`} className="routine-break-th">
-                              <div>{slot.label}</div>
-                              <small className="tabular-nums">{slot.timeBn}</small>
-                            </th>
-                          ) : (
-                            <th key={`p-${slot.period}`}>
-                              <div>{slot.shortLabel} পিরিয়ড</div>
-                              <small className="tabular-nums">{slot.timeBn}</small>
-                            </th>
-                          )
+                        <th rowSpan={2} className="routine-sum-corner-th">
+                          শ্রেণি ও শাখা
+                        </th>
+                        {visibleDays.map(day => (
+                          <th
+                            key={`sum-d-${day}`}
+                            colSpan={timeline.length}
+                            className="routine-sum-day-th day-end"
+                          >
+                            {day}
+                          </th>
+                        ))}
+                      </tr>
+                      <tr>
+                        {visibleDays.map(day =>
+                          timeline.map((slot, sIdx) => {
+                            const isDayEnd = sIdx === timeline.length - 1;
+                            if (slot.type === "break") {
+                              return (
+                                <th
+                                  key={`sum-bh-${day}-${sIdx}`}
+                                  className={`routine-sum-brk-th ${isDayEnd ? "day-end" : ""}`}
+                                >
+                                  <div>বিরতি</div>
+                                  <small className="tabular-nums">{formatMinutes12hBn(slot.startMin)}</small>
+                                  <small className="tabular-nums">{formatMinutes12hBn(slot.endMin)}</small>
+                                </th>
+                              );
+                            }
+                            return (
+                              <th
+                                key={`sum-ph-${day}-${slot.period}`}
+                                className={`routine-sum-p-th ${isDayEnd ? "day-end" : ""}`}
+                              >
+                                <div className="tabular-nums">{toBnStr(slot.period)}</div>
+                                <small className="tabular-nums">{formatMinutes12hBn(slot.startMin)}</small>
+                                <small className="tabular-nums">{formatMinutes12hBn(slot.endMin)}</small>
+                              </th>
+                            );
+                          })
                         )}
                       </tr>
                     </thead>
+
                     <tbody>
                       {visibleMasterSections.map((secMeta, rowIdx) => {
                         const ctTeacher = teachers.find(
                           t => t.classTeacherClass === secMeta.clsName && (t.classTeacherSection || "ক") === secMeta.secName
                         );
-                        const { coveredBy, effectiveSpan } = getCoveredPeriodsForRow(routine.entries, day, secMeta.secKey, timeline);
+                        const hasMultiSec = (classSectionCounts[secMeta.clsName] || 1) > 1;
+                        const rowLabel = hasMultiSec ? `${secMeta.clsName} (${secMeta.secName})` : secMeta.clsName;
 
                         return (
-                          <tr key={secMeta.secKey}>
-                            <td className="routine-sec-td">
-                              <div style={{ fontWeight: 700, color: "var(--ink)" }}>
-                                {secMeta.clsName} ({secMeta.secName})
-                              </div>
-                              <div style={{ fontSize: "11.5px", color: "var(--muted)" }}>
-                                রুম: {secMeta.room} · আসন {toBnStr(secMeta.capacity)}
-                              </div>
-                              {ctTeacher && (
-                                <div style={{ fontSize: "11px", color: "var(--brand-dark)", fontWeight: 600, marginTop: 2 }}>
-                                  শ্রেণি শিক্ষক: {ctTeacher.name}
-                                </div>
+                          <tr key={`sum-r-${secMeta.secKey}`}>
+                            <td
+                              className="routine-sum-cls-td"
+                              title={`রুম: ${secMeta.room} · শ্রেণি শিক্ষক: ${ctTeacher ? `${ctTeacher.name} (${ctTeacher.phone || "—"})` : "নির্ধারিত নয়"}`}
+                            >
+                              <div>{rowLabel}</div>
+                              {!hasMultiSec && secMeta.secName && secMeta.secName !== "ক" && (
+                                <small style={{ fontSize: "10.5px", color: "var(--muted)", fontWeight: 500 }}>
+                                  {secMeta.secName}
+                                </small>
                               )}
                             </td>
 
-                            {timeline.map((slot, sIdx) => {
-                              if (slot.type === "break") {
-                                if (rowIdx === 0) {
-                                  return (
-                                    <td
-                                      key={`brk-${sIdx}`}
-                                      rowSpan={visibleMasterSections.length}
-                                      className="routine-break-td"
-                                    >
-                                      <div className="routine-break-vertical">
-                                        <b>{slot.label}</b>
-                                        <span className="tabular-nums">{toBnStr(slot.duration)} মি.</span>
-                                      </div>
-                                    </td>
-                                  );
+                            {visibleDays.map(day => {
+                              const { coveredBy, effectiveSpan } = getCoveredPeriodsForRow(routine.entries, day, secMeta.secKey, timeline);
+
+                              return timeline.map((slot, sIdx) => {
+                                const isLastSlotInDay = sIdx === timeline.length - 1;
+                                if (slot.type === "break") {
+                                  if (rowIdx === 0) {
+                                    return (
+                                      <td
+                                        key={`sum-b-${day}-${sIdx}`}
+                                        rowSpan={visibleMasterSections.length}
+                                        className={`routine-sum-brk-td ${isLastSlotInDay ? "day-end" : ""}`}
+                                      >
+                                        <div className="routine-sum-brk-rot">
+                                          {slot.label} ({toBnStr(slot.duration)} মিনিট)
+                                        </div>
+                                      </td>
+                                    );
+                                  }
+                                  return null;
                                 }
-                                return null;
-                              }
 
-                              const p = slot.period;
-                              if (coveredBy[p]) return null;
+                                const p = slot.period;
+                                if (coveredBy[p]) return null;
 
-                              const entry = (routine.entries || {})[cellSlotKey(day, secMeta.secKey, p)];
-                              const cellSpan = entry ? effectiveSpan[p] || 1 : 1;
-                              const ownerKey = cellSlotKey(day, secMeta.secKey, p);
-                              const streakSt = entry ? cellStreakStatus[ownerKey] : null;
+                                const entry = (routine.entries || {})[cellSlotKey(day, secMeta.secKey, p)];
+                                const cellSpan = entry ? effectiveSpan[p] || 1 : 1;
+                                const spanEndIdx = sIdx + cellSpan - 1;
+                                const isSpanDayEnd = spanEndIdx >= timeline.length - 1;
+                                const ownerKey = cellSlotKey(day, secMeta.secKey, p);
+                                const streakSt = entry ? cellStreakStatus[ownerKey] : null;
 
-                              // Check if any item in this cell has a teacher clash within p..p+cellSpan-1
-                              let cellHasClash = false;
-                              if (entry) {
-                                for (let k = 0; k < cellSpan; k++) {
-                                  for (const it of entry.items) {
-                                    if (it.teacherId && clashMap[`${day}|${it.teacherId}|${p + k}`]) {
-                                      cellHasClash = true;
+                                let cellHasClash = false;
+                                if (entry) {
+                                  for (let k = 0; k < cellSpan; k++) {
+                                    for (const it of entry.items) {
+                                      if (it.teacherId && clashMap[`${day}|${it.teacherId}|${p + k}`]) {
+                                        cellHasClash = true;
+                                      }
                                     }
                                   }
                                 }
-                              }
 
-                              const isSplit = entry && entry.items.length > 1;
-                              const isCommon = entry && Boolean(entry.commonId);
-                              const isMerged = cellSpan > 1;
-                              const commonLabels = isCommon
-                                ? (entry.commonTargets || []).map(tk => {
-                                    const m = secMetaByKey.get(tk);
-                                    return m ? m.secName : tk;
-                                  })
-                                : [];
+                                const isSplit = entry && entry.items.length > 1;
+                                const isCommon = entry && Boolean(entry.commonId);
+                                const isMerged = cellSpan > 1;
 
-                              return (
-                                <td
-                                  key={`p-${p}`}
-                                  colSpan={cellSpan}
-                                  className={[
-                                    "routine-cell",
-                                    !isStudent ? "editable" : "",
-                                    !entry ? "empty-cell" : "",
-                                    isSplit ? "split" : "",
-                                    isCommon ? "common" : "",
-                                    isMerged ? "merged" : "",
-                                    cellHasClash ? "clash" : "",
-                                    streakSt === "unapproved" ? "streak-warn" : "",
-                                    streakSt === "approved" ? "streak-approved" : ""
-                                  ].filter(Boolean).join(" ")}
-                                  onClick={() => {
-                                    if (!isStudent) setSlotModal({ day, secKey: secMeta.secKey, period: p });
-                                  }}
-                                >
-                                  {!entry ? (
-                                    <span className="routine-empty-hint">{isStudent ? "—" : "+ যুক্ত করুন"}</span>
-                                  ) : (
-                                    <div className="routine-cell-inner">
-                                      <div className="routine-cell-tags">
-                                        {isCommon && (
-                                          <span className="routine-tag common">
-                                            কমন: {commonLabels.join(" + ")}
-                                          </span>
+                                const subjectText = entry
+                                  ? entry.items.map(it => it.subject || "—").join(" / ")
+                                  : "";
+                                const teacherCodesText = entry
+                                  ? entry.items
+                                      .map(it => {
+                                        if (!it.teacherId) return "—";
+                                        return teacherShortCodeMap.get(it.teacherId) || "—";
+                                      })
+                                      .join(" / ")
+                                  : "";
+
+                                const tooltipText = entry
+                                  ? [
+                                      `${secMeta.clsName} (${secMeta.secName}) · ${day} · ${ordinalPeriodBn(p)}${isMerged ? `–${ordinalPeriodBn(p + cellSpan - 1)}` : ""}`,
+                                      ...entry.items.map(it => {
+                                        const tr = teacherById.get(it.teacherId);
+                                        const code = tr ? (teacherShortCodeMap.get(tr.id) || "") : "";
+                                        return `${it.subject || "—"} — ${tr ? `${tr.name} [${code}] (${tr.phone || "—"})` : "শিক্ষক নির্ধারিত নয়"}${isSplit && it.studentCount ? ` (${toBnStr(it.studentCount)} জন)` : ""}`;
+                                      }),
+                                      isCommon ? "কমন / সম্মিলিত ক্লাস" : "",
+                                      cellHasClash ? "⚠ শিক্ষকের সময় সংঘর্ষ!" : "",
+                                      streakSt === "unapproved" ? "⚠ বিরতি ছাড়া টানা ৩+ ক্লাস!" : "",
+                                      streakSt === "approved" ? "অ্যাডমিন অনুমোদিত টানা ৩+ ক্লাস" : ""
+                                    ]
+                                      .filter(Boolean)
+                                      .join("\n")
+                                  : `${secMeta.clsName} (${secMeta.secName}) · ${day} · ${ordinalPeriodBn(p)} পিরিয়ড${isStudent ? "" : " (ক্লিক করে ক্লাস যোগ করুন)"}`;
+
+                                return (
+                                  <td
+                                    key={`sum-c-${day}-${p}`}
+                                    colSpan={cellSpan}
+                                    title={tooltipText}
+                                    className={[
+                                      "routine-sum-cell",
+                                      !isStudent ? "editable" : "",
+                                      !entry ? "empty-cell" : "",
+                                      isCommon ? "common" : "",
+                                      isMerged ? "merged" : "",
+                                      isSplit ? "split" : "",
+                                      cellHasClash ? "clash" : "",
+                                      streakSt === "unapproved" ? "streak-warn" : "",
+                                      streakSt === "approved" ? "streak-approved" : "",
+                                      isSpanDayEnd ? "day-end" : ""
+                                    ]
+                                      .filter(Boolean)
+                                      .join(" ")}
+                                    onClick={() => {
+                                      if (!isStudent) setSlotModal({ day, secKey: secMeta.secKey, period: p });
+                                    }}
+                                  >
+                                    {!entry ? (
+                                      <span className="routine-sum-empty">{isStudent ? "" : "+"}</span>
+                                    ) : (
+                                      <div className="routine-sum-cell-box">
+                                        {(isCommon || isMerged || cellHasClash || streakSt) && (
+                                          <div className="routine-sum-badges">
+                                            {isCommon && <span className="sum-mark common">কমন</span>}
+                                            {isMerged && <span className="sum-mark merged">{toBnStr(cellSpan)}পি.</span>}
+                                            {cellHasClash && <span className="sum-mark clash">!</span>}
+                                            {streakSt === "unapproved" && <span className="sum-mark warn">৩+</span>}
+                                          </div>
                                         )}
-                                        {isMerged && (
-                                          <span className="routine-tag merged">
-                                            {toBnStr(cellSpan)} পিরিয়ড মার্জ ({mergedPeriodTimeRangeBn(timeline, p, cellSpan)})
-                                          </span>
-                                        )}
-                                        {isSplit && (
-                                          <span className="routine-tag split">বিভক্ত ({toBnStr(entry.items.length)} গ্রুপ)</span>
-                                        )}
-                                        {cellHasClash && <span className="routine-tag clash">সংঘর্ষ!</span>}
-                                        {streakSt === "unapproved" && <span className="routine-tag streak-warn">টানা ৩+ ক্লাস!</span>}
-                                        {streakSt === "approved" && <span className="routine-tag streak-approved">অ্যাডমিন অনুমোদিত (৩+)</span>}
+                                        <div className="routine-sum-sub">{subjectText}</div>
+                                        <div className="routine-sum-tcode">{teacherCodesText}</div>
                                       </div>
-
-                                      <div className="routine-items-list">
-                                        {entry.items.map((it, iIdx) => {
-                                          const t = teacherById.get(it.teacherId);
-                                          return (
-                                            <div key={iIdx} className="routine-item-line">
-                                              <b>
-                                                {it.subject || "—"}
-                                                {isSplit && it.studentCount > 0 ? ` (${toBnStr(it.studentCount)} জন)` : ""}
-                                              </b>
-                                              <span>{t ? t.name : "শিক্ষক নির্ধারিত নয়"}</span>
-                                            </div>
-                                          );
-                                        })}
-                                      </div>
-
-                                      {entry.room && entry.room !== secMeta.room && (
-                                        <div style={{ fontSize: "10.5px", color: "var(--muted)", marginTop: 2 }}>
-                                          স্থান: {entry.room}
-                                        </div>
-                                      )}
-                                    </div>
-                                  )}
-                                </td>
-                              );
+                                    )}
+                                  </td>
+                                );
+                              });
                             })}
                           </tr>
                         );
@@ -1992,8 +2115,202 @@ export default function RoutineModule({
                     </tbody>
                   </table>
                 </div>
+
+                {/* শিক্ষক শর্ট কোড পরিচিতি (Legend) */}
+                {teachers.length > 0 && (
+                  <div className="routine-sum-legend">
+                    <b>শিক্ষক শর্ট কোড পরিচিতি:</b>{" "}
+                    {teachers.map((t, idx) => (
+                      <span key={t.id}>
+                        {idx > 0 ? " · " : ""}
+                        <b>{teacherShortCodeMap.get(t.id)}</b> = {t.name} ({t.subject}{t.phone && t.phone !== "—" ? `, ${t.phone}` : ""})
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                <div className="routine-sum-footer tabular-nums">
+                  <span>রুটিন তৈরি: {new Date().toLocaleDateString("bn-BD")}</span>
+                  <span>{(settings && settings.name) || "স্কুল ম্যানেজমেন্ট"} · ক্লাস রুটিন</span>
+                </div>
               </div>
-            ))}
+            ) : (
+              visibleDays.map(day => (
+                <div className="card card-block" key={day} style={{ marginBottom: 16 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+                    <h3 style={{ margin: 0 }}>{day} — মাস্টার ক্লাস রুটিন</h3>
+                    <span style={{ fontSize: "12.5px", color: "var(--muted)" }}>
+                      শুরু: {startTimeFormatted} · মোট {toBnStr(cfg.periodsPerDay)} পিরিয়ড
+                    </span>
+                  </div>
+                  <div className="table-wrap">
+                    <table className="routine-table">
+                      <thead>
+                        <tr>
+                          <th style={{ minWidth: 155, textAlign: "left" }}>শ্রেণি ও শাখা</th>
+                          {timeline.map((slot, idx) =>
+                            slot.type === "break" ? (
+                              <th key={`b-${idx}`} className="routine-break-th">
+                                <div>{slot.label}</div>
+                                <small className="tabular-nums">{slot.timeBn}</small>
+                              </th>
+                            ) : (
+                              <th key={`p-${slot.period}`}>
+                                <div>{slot.shortLabel} পিরিয়ড</div>
+                                <small className="tabular-nums">{slot.timeBn}</small>
+                              </th>
+                            )
+                          )}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {visibleMasterSections.map((secMeta, rowIdx) => {
+                          const ctTeacher = teachers.find(
+                            t => t.classTeacherClass === secMeta.clsName && (t.classTeacherSection || "ক") === secMeta.secName
+                          );
+                          const { coveredBy, effectiveSpan } = getCoveredPeriodsForRow(routine.entries, day, secMeta.secKey, timeline);
+
+                          return (
+                            <tr key={secMeta.secKey}>
+                              <td className="routine-sec-td">
+                                <div style={{ fontWeight: 700, color: "var(--ink)" }}>
+                                  {secMeta.clsName} ({secMeta.secName})
+                                </div>
+                                <div style={{ fontSize: "11.5px", color: "var(--muted)" }}>
+                                  রুম: {secMeta.room} · আসন {toBnStr(secMeta.capacity)}
+                                </div>
+                                {ctTeacher && (
+                                  <div style={{ fontSize: "11px", color: "var(--brand-dark)", fontWeight: 600, marginTop: 2 }}>
+                                    শ্রেণি শিক্ষক: {ctTeacher.name}
+                                  </div>
+                                )}
+                              </td>
+
+                              {timeline.map((slot, sIdx) => {
+                                if (slot.type === "break") {
+                                  if (rowIdx === 0) {
+                                    return (
+                                      <td
+                                        key={`brk-${sIdx}`}
+                                        rowSpan={visibleMasterSections.length}
+                                        className="routine-break-td"
+                                      >
+                                        <div className="routine-break-vertical">
+                                          <b>{slot.label}</b>
+                                          <span className="tabular-nums">{toBnStr(slot.duration)} মি.</span>
+                                        </div>
+                                      </td>
+                                    );
+                                  }
+                                  return null;
+                                }
+
+                                const p = slot.period;
+                                if (coveredBy[p]) return null;
+
+                                const entry = (routine.entries || {})[cellSlotKey(day, secMeta.secKey, p)];
+                                const cellSpan = entry ? effectiveSpan[p] || 1 : 1;
+                                const ownerKey = cellSlotKey(day, secMeta.secKey, p);
+                                const streakSt = entry ? cellStreakStatus[ownerKey] : null;
+
+                                // Check if any item in this cell has a teacher clash within p..p+cellSpan-1
+                                let cellHasClash = false;
+                                if (entry) {
+                                  for (let k = 0; k < cellSpan; k++) {
+                                    for (const it of entry.items) {
+                                      if (it.teacherId && clashMap[`${day}|${it.teacherId}|${p + k}`]) {
+                                        cellHasClash = true;
+                                      }
+                                    }
+                                  }
+                                }
+
+                                const isSplit = entry && entry.items.length > 1;
+                                const isCommon = entry && Boolean(entry.commonId);
+                                const isMerged = cellSpan > 1;
+                                const commonLabels = isCommon
+                                  ? (entry.commonTargets || []).map(tk => {
+                                      const m = secMetaByKey.get(tk);
+                                      return m ? m.secName : tk;
+                                    })
+                                  : [];
+
+                                return (
+                                  <td
+                                    key={`p-${p}`}
+                                    colSpan={cellSpan}
+                                    className={[
+                                      "routine-cell",
+                                      !isStudent ? "editable" : "",
+                                      !entry ? "empty-cell" : "",
+                                      isSplit ? "split" : "",
+                                      isCommon ? "common" : "",
+                                      isMerged ? "merged" : "",
+                                      cellHasClash ? "clash" : "",
+                                      streakSt === "unapproved" ? "streak-warn" : "",
+                                      streakSt === "approved" ? "streak-approved" : ""
+                                    ].filter(Boolean).join(" ")}
+                                    onClick={() => {
+                                      if (!isStudent) setSlotModal({ day, secKey: secMeta.secKey, period: p });
+                                    }}
+                                  >
+                                    {!entry ? (
+                                      <span className="routine-empty-hint">{isStudent ? "—" : "+ যুক্ত করুন"}</span>
+                                    ) : (
+                                      <div className="routine-cell-inner">
+                                        <div className="routine-cell-tags">
+                                          {isCommon && (
+                                            <span className="routine-tag common">
+                                              কমন: {commonLabels.join(" + ")}
+                                            </span>
+                                          )}
+                                          {isMerged && (
+                                            <span className="routine-tag merged">
+                                              {toBnStr(cellSpan)} পিরিয়ড মার্জ ({mergedPeriodTimeRangeBn(timeline, p, cellSpan)})
+                                            </span>
+                                          )}
+                                          {isSplit && (
+                                            <span className="routine-tag split">বিভক্ত ({toBnStr(entry.items.length)} গ্রুপ)</span>
+                                          )}
+                                          {cellHasClash && <span className="routine-tag clash">সংঘর্ষ!</span>}
+                                          {streakSt === "unapproved" && <span className="routine-tag streak-warn">টানা ৩+ ক্লাস!</span>}
+                                          {streakSt === "approved" && <span className="routine-tag streak-approved">অ্যাডমিন অনুমোদিত (৩+)</span>}
+                                        </div>
+
+                                        <div className="routine-items-list">
+                                          {entry.items.map((it, iIdx) => {
+                                            const t = teacherById.get(it.teacherId);
+                                            return (
+                                              <div key={iIdx} className="routine-item-line">
+                                                <b>
+                                                  {it.subject || "—"}
+                                                  {isSplit && it.studentCount > 0 ? ` (${toBnStr(it.studentCount)} জন)` : ""}
+                                                </b>
+                                                <span>{t ? `${t.name} (${teacherShortCodeMap.get(t.id) || ""})` : "শিক্ষক নির্ধারিত নয়"}</span>
+                                              </div>
+                                            );
+                                          })}
+                                        </div>
+
+                                        {entry.room && entry.room !== secMeta.room && (
+                                          <div style={{ fontSize: "10.5px", color: "var(--muted)", marginTop: 2 }}>
+                                            স্থান: {entry.room}
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
       )}

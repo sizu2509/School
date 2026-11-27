@@ -65,6 +65,56 @@ export function formatMinutes12hBn(totalMins) {
   return `${toBnStr(h12)}:${toBnStr(String(m).padStart(2, "0"))}`;
 }
 
+const NAME_PREFIX_RE = /^(মোঃ|মো\.|মোহাম্মদ|ড\.|অধ্যাপক|মাওলানা|জনাব|বেগম|mr\.?|mrs\.?|ms\.?|dr\.?|md\.?)\s+/i;
+
+export function getTeacherShortCode(teacher) {
+  if (!teacher) return "—";
+  const custom = String(teacher.shortCode || "").trim();
+  if (custom) return custom;
+
+  let clean = String(teacher.name || "").trim();
+  while (NAME_PREFIX_RE.test(clean)) {
+    clean = clean.replace(NAME_PREFIX_RE, "").trim();
+  }
+  const words = clean.split(/[\s,.-]+/).filter(Boolean);
+  if (words.length === 0) return String(teacher.teacherCode || "শ").slice(0, 4);
+
+  if (words.every(w => /^[A-Za-z]+$/.test(w))) {
+    if (words.length >= 2) {
+      return words.slice(0, 3).map(w => w[0].toUpperCase()).join("");
+    }
+    return words[0].slice(0, 3).toUpperCase();
+  }
+
+  if (words.length >= 2) {
+    return words
+      .slice(0, 3)
+      .map(w => {
+        const m = w.match(/^[\u0980-\u09FF][\u09BE-\u09CD\u09D7]?/);
+        return m ? m[0] : w[0];
+      })
+      .join(".");
+  }
+  return words[0].slice(0, 3);
+}
+
+export function buildTeacherShortCodeMap(teachers) {
+  const map = new Map();
+  const used = new Map();
+  (teachers || []).forEach(t => {
+    if (!t || !t.id) return;
+    const explicit = String(t.shortCode || "").trim();
+    let base = explicit || getTeacherShortCode(t);
+    if (!explicit) {
+      const count = used.get(base) || 0;
+      used.set(base, count + 1);
+      if (count > 0) base = `${base}${toBnStr(count + 1)}`;
+    }
+    map.set(t.id, base);
+  });
+  return map;
+}
+
 export function defaultRoutineConfig() {
   return {
     startTime: "09:00",

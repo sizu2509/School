@@ -983,6 +983,7 @@ function normalizeTeacherRecord(t, includeSalary) {
   const out = {
     id: base.id || uid(),
     teacherCode: base.teacherCode || ("TCH-" + String(base.id || "100").replace(/\D/g, "").padStart(3, "0") || "TCH-100"),
+    shortCode: String(base.shortCode || "").trim(),
     name: base.name || "শিক্ষক",
     designation: base.designation || "সহকারী শিক্ষক",
     subject: base.subject || "সাধারণ",
@@ -4734,6 +4735,7 @@ function TeacherForm({ initial, presetSubject, classes, allTeachers, allSubjectN
     }
     return {
       teacherCode: "TCH-" + String(100 + Math.floor(Math.random() * 899)),
+      shortCode: "",
       name: "",
       designation: "সহকারী শিক্ষক",
       subject: presetSubject || ((allSubjectNames && allSubjectNames[0]) || ""),
@@ -4836,6 +4838,7 @@ function TeacherForm({ initial, presetSubject, classes, allTeachers, allSubjectN
       : prevHistory;
     save({
       teacherCode: f.teacherCode.trim() || "TCH-100",
+      shortCode: (f.shortCode || "").trim().slice(0, 12),
       name: f.name.trim(),
       designation: f.designation.trim() || "সহকারী শিক্ষক",
       subject: primarySub,
@@ -4866,6 +4869,7 @@ function TeacherForm({ initial, presetSubject, classes, allTeachers, allSubjectN
     <ModalForm title={initial ? "শিক্ষকের তথ্য সম্পাদনা" : "নতুন শিক্ষক যোগ করুন"} sub="বিষয়, অতিরিক্ত পাঠদান বিষয়, শ্রেণি শিক্ষক নির্বাচন, যোগদানের তারিখ ও বেতন-ভাতা নির্ধারণ করুন" close={close} onSubmit={submit}>
       <Field label="শিক্ষকের নাম *"><input value={f.name} onChange={set("name")} required /></Field>
       <Field label="শিক্ষক আইডি / কোড"><input value={f.teacherCode} onChange={set("teacherCode")} placeholder="যেমন: TCH-123" /></Field>
+      <Field label="রুটিন শর্ট কোড (ঐচ্ছিক)"><input value={f.shortCode || ""} onChange={set("shortCode")} maxLength={12} placeholder="যেমন: LR, HK, নু.আ" /></Field>
       <Field label="পদবি">
         <input list="t-desig-opts" value={f.designation} onChange={set("designation")} />
         <datalist id="t-desig-opts">
