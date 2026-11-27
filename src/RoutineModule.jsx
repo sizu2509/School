@@ -72,15 +72,30 @@ function RoutineSlotModal({
   onClose
 }) {
   const secByKey = useMemo(() => new Map(allSectionsMeta.map(s => [s.secKey, s])), [allSectionsMeta]);
-  const [day, setDay] = useState(initial.day || routine.config.days[0] || "রবিবার");
+  const ALL_DAYS_VAL = "__ALL_DAYS__";
+  const allDaysList = routine.config.days && routine.config.days.length ? routine.config.days : ["রবিবার"];
+  const allDaysRangeLabel = allDaysList.length > 1
+    ? `${allDaysList[0]}-${allDaysList[allDaysList.length - 1]}`
+    : allDaysList[0];
+
+  const [day, setDay] = useState(initial.day || allDaysList[0] || "রবিবার");
+  const isAllDays = day === ALL_DAYS_VAL;
+  const targetDaysList = useMemo(
+    () => (isAllDays ? allDaysList : [day]),
+    [isAllDays, allDaysList, day]
+  );
+
   const [secKey, setSecKey] = useState(initial.secKey || (allSectionsMeta[0] && allSectionsMeta[0].secKey) || "");
   const [period, setPeriod] = useState(Number(initial.period) || 1);
 
   const curMeta = secByKey.get(secKey) || allSectionsMeta[0];
-  const existingEntry = useMemo(
-    () => (routine.entries || {})[cellSlotKey(day, secKey, period)] || null,
-    [routine.entries, day, secKey, period]
-  );
+  const existingEntry = useMemo(() => {
+    for (const d of targetDaysList) {
+      const e = (routine.entries || {})[cellSlotKey(d, secKey, period)];
+      if (e) return e;
+    }
+    return null;
+  }, [routine.entries, targetDaysList, secKey, period]);
 
   const [span, setSpan] = useState(() => (existingEntry ? existingEntry.span : 1));
   const [items, setItems] = useState(() =>
@@ -113,9 +128,19 @@ function RoutineSlotModal({
   const [formErr, setFormErr] = useState("");
 
   // Sync form state when picking a different cell inside the "+ রুটিনে ক্লাস দিন" modal flow
-  const reloadCellIfChanged = (nDay, nSecKey, nPeriod) => {
-    const nxt = (routine.entries || {})[cellSlotKey(nDay, nSecKey, nPeriod)];
+  const reloadCellIfChanged = (nDay, nSecKey, nPeriod, preserveFilled = false) => {
+    const checkDays = nDay === ALL_DAYS_VAL ? allDaysList : [nDay];
+    let nxt = null;
+    for (const d of checkDays) {
+      const e = (routine.entries || {})[cellSlotKey(d, nSecKey, nPeriod)];
+      if (e) { nxt = e; break; }
+    }
     const meta = secByKey.get(nSecKey);
+    const hasTypedContent = preserveFilled && items.some(it => String(it.subject || "").trim() || String(it.teacherId || "").trim());
+    if (hasTypedContent) {
+      setFormErr("");
+      return;
+    }
     if (nxt) {
       setSpan(nxt.span || 1);
       setItems((nxt.items || []).map(it => ({ ...it })));
@@ -185,24 +210,59 @@ function RoutineSlotModal({
     [isCommon, secKey, commonTargets]
   );
 
+  const checkTeacherMultiDayFree = teacherId => {
+    if (!teacherId) return { free: true, busyAt: [] };
+    const busyAll = [];
+    for (const d of targetDaysList) {
+      const dayExisting = (routine.entries || {})[cellSlotKey(d, secKey, period)];
+      const st = slotFreeStatusForTeacher(
+        routine.entries,
+        d,
+        period,
+        effectiveSpan,
+        teacherId,
+        secKey,
+        dayExisting ? dayExisting.commonId : "",
+        timeline
+      );
+      if (!st.free) {
+        st.busyAt.forEach(b => busyAll.push(isAllDays ? `${d}: ${b}` : b));
+      }
+    }
+    return { free: busyAll.length === 0, busyAt: Array.from(new Set(busyAll)) };
+  };
+
+  const checkTeacherMultiDayStreak = teacherId => {
+    if (!teacherId) return { violates: false, streakPeriods: [], violateDays: [] };
+    let worstPeriods = [];
+    const violateDays = [];
+    for (const d of targetDaysList) {
+      const res = checkTeacherStreakIfAssigned({
+        entries: routine.entries || {},
+        timeline,
+        allSectionKeys,
+        day: d,
+        secKey,
+        period,
+        span: effectiveSpan,
+        teacherId,
+        commonTargets: activeCommonTargets
+      });
+      if (res.violates) {
+        violateDays.push(d);
+        if (res.streakPeriods.length > worstPeriods.length) worstPeriods = res.streakPeriods;
+      }
+    }
+    return {
+      violates: violateDays.length > 0,
+      streakPeriods: worstPeriods,
+      violateDays
+    };
+  };
+
   const itemStreakChecks = useMemo(
-    () =>
-      items.map(it =>
-        it.teacherId
-          ? checkTeacherStreakIfAssigned({
-              entries: routine.entries || {},
-              timeline,
-              allSectionKeys,
-              day,
-              secKey,
-              period,
-              span: effectiveSpan,
-              teacherId: it.teacherId,
-              commonTargets: activeCommonTargets
-            })
-          : { violates: false, streakPeriods: [] }
-      ),
-    [items, routine.entries, timeline, allSectionKeys, day, secKey, period, effectiveSpan, activeCommonTargets]
+    () => items.map(it => checkTeacherMultiDayStreak(it.teacherId)),
+    [items, routine.entries, timeline, allSectionKeys, targetDaysList, secKey, period, effectiveSpan, activeCommonTargets]
   );
 
   const violatingEntries = useMemo(() => {
@@ -216,7 +276,8 @@ function RoutineSlotModal({
           teacherId: it.teacherId,
           teacherName: t ? t.name : it.teacherId,
           subject: it.subject,
-          streakPeriods: res.streakPeriods
+          streakPeriods: res.streakPeriods,
+          violateDays: res.violateDays || []
         });
       }
     });
@@ -233,28 +294,9 @@ function RoutineSlotModal({
     if (!row) return;
     const isSafe = t => {
       if (t.id === row.teacherId) return false;
-      const st = slotFreeStatusForTeacher(
-        routine.entries,
-        day,
-        period,
-        effectiveSpan,
-        t.id,
-        secKey,
-        existingEntry ? existingEntry.commonId : "",
-        timeline
-      );
+      const st = checkTeacherMultiDayFree(t.id);
       if (!st.free) return false;
-      const sk = checkTeacherStreakIfAssigned({
-        entries: routine.entries || {},
-        timeline,
-        allSectionKeys,
-        day,
-        secKey,
-        period,
-        span: effectiveSpan,
-        teacherId: t.id,
-        commonTargets: activeCommonTargets
-      });
+      const sk = checkTeacherMultiDayStreak(t.id);
       return !sk.violates;
     };
 
@@ -317,7 +359,10 @@ function RoutineSlotModal({
       : "";
 
     onSave({
-      day,
+      day: targetDaysList[0],
+      days: targetDaysList,
+      isAllDays,
+      allDaysRangeLabel,
       secKey,
       period,
       span: effectiveSpan,
@@ -344,10 +389,10 @@ function RoutineSlotModal({
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
           <div>
             <h2 style={{ marginBottom: 4 }}>
-              {existingEntry ? "ক্লাস পিরিয়ড সম্পাদনা" : "নতুন ক্লাস পিরিয়ড নির্ধারণ"}
+              {existingEntry && !isAllDays ? "ক্লাস পিরিয়ড সম্পাদনা" : "নতুন ক্লাস পিরিয়ড নির্ধারণ"}
             </h2>
             <p className="sub" style={{ marginBottom: 10 }}>
-              {curMeta ? `${curMeta.clsName} (${curMeta.secName})` : ""} · {day} · {ordinalPeriodBn(period)} পিরিয়ড
+              {curMeta ? `${curMeta.clsName} (${curMeta.secName})` : ""} · {isAllDays ? `${allDaysRangeLabel} (সকল দিন)` : day} · {ordinalPeriodBn(period)} পিরিয়ড
               {effectiveSpan > 1 ? ` থেকে ${ordinalPeriodBn(period + effectiveSpan - 1)} পিরিয়ড` : ""}
               {mergedRange ? ` (${mergedRange})` : ""}
             </p>
@@ -356,9 +401,9 @@ function RoutineSlotModal({
             <button
               type="button"
               className="mini-btn red"
-              onClick={() => onDelete({ day, secKey, period, oldCommonId: existingEntry.commonId || "" })}
+              onClick={() => onDelete({ day: targetDaysList[0], days: targetDaysList, secKey, period, oldCommonId: existingEntry.commonId || "" })}
             >
-              এই ক্লাস মুছুন
+              {isAllDays ? "সব দিনের এই ক্লাস মুছুন" : "এই ক্লাস মুছুন"}
             </button>
           )}
         </div>
@@ -373,10 +418,13 @@ function RoutineSlotModal({
                 onChange={e => {
                   const v = e.target.value;
                   setDay(v);
-                  reloadCellIfChanged(v, secKey, period);
+                  reloadCellIfChanged(v, secKey, period, v === ALL_DAYS_VAL);
                 }}
               >
-                {routine.config.days.map(d => <option key={d} value={d}>{d}</option>)}
+                {allDaysList.map(d => <option key={d} value={d}>{d}</option>)}
+                {allDaysList.length > 1 && (
+                  <option value={ALL_DAYS_VAL}>{allDaysRangeLabel} (সব দিন)</option>
+                )}
               </select>
             </div>
             <div>
@@ -386,7 +434,7 @@ function RoutineSlotModal({
                 onChange={e => {
                   const v = e.target.value;
                   setSecKey(v);
-                  reloadCellIfChanged(day, v, period);
+                  reloadCellIfChanged(day, v, period, false);
                 }}
               >
                 {allSectionsMeta.map(m => (
@@ -466,17 +514,8 @@ function RoutineSlotModal({
 
           <div style={{ display: "grid", gap: 8 }}>
             {items.map((it, idx) => {
-              const teacherStatus = slotFreeStatusForTeacher(
-                routine.entries,
-                day,
-                period,
-                effectiveSpan,
-                it.teacherId,
-                secKey,
-                existingEntry ? existingEntry.commonId : "",
-                timeline
-              );
-              const curStreak = itemStreakChecks[idx] || { violates: false, streakPeriods: [] };
+              const teacherStatus = checkTeacherMultiDayFree(it.teacherId);
+              const curStreak = itemStreakChecks[idx] || { violates: false, streakPeriods: [], violateDays: [] };
               return (
                 <div key={idx} className="routine-split-row">
                   <div>
@@ -496,27 +535,8 @@ function RoutineSlotModal({
                     >
                       <option value="">— শিক্ষক নির্বাচন করুন —</option>
                       {teachers.map(t => {
-                        const st = slotFreeStatusForTeacher(
-                          routine.entries,
-                          day,
-                          period,
-                          effectiveSpan,
-                          t.id,
-                          secKey,
-                          existingEntry ? existingEntry.commonId : "",
-                          timeline
-                        );
-                        const sk = checkTeacherStreakIfAssigned({
-                          entries: routine.entries || {},
-                          timeline,
-                          allSectionKeys,
-                          day,
-                          secKey,
-                          period,
-                          span: effectiveSpan,
-                          teacherId: t.id,
-                          commonTargets: activeCommonTargets
-                        });
+                        const st = checkTeacherMultiDayFree(t.id);
+                        const sk = checkTeacherMultiDayStreak(t.id);
                         const tagLabel = !st.free
                           ? `⚠ ব্যস্ত: ${st.busyAt[0]}`
                           : sk.violates
@@ -537,7 +557,7 @@ function RoutineSlotModal({
                     {it.teacherId && curStreak.violates && (
                       <div style={{ fontSize: "11.5px", color: "#b45309", fontWeight: 700, marginTop: 3, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                         <span>
-                          সতর্কতা: বিরতি/টিফিন ছাড়া টানা {toBnStr(curStreak.streakPeriods.length)} ক্লাস (
+                          সতর্কতা{curStreak.violateDays && curStreak.violateDays.length && isAllDays ? ` (${curStreak.violateDays.join(", ")})` : ""}: বিরতি/টিফিন ছাড়া টানা {toBnStr(curStreak.streakPeriods.length)} ক্লাস (
                           {curStreak.streakPeriods.map(pNum => ordinalPeriodBn(pNum)).join(", ")} পিরিয়ড)।
                         </span>
                         <button
@@ -969,80 +989,98 @@ export default function RoutineModule({
   };
 
   const saveRoutineSlot = payload => {
+    const daysToSave = Array.isArray(payload.days) && payload.days.length ? payload.days : [payload.day];
     updateRoutine(prev => {
       const nextEntries = { ...prev.entries };
 
-      // ১. পুরনো কমন-ক্লাসের যেসব শাখা আন-চেক করা হয়েছে সেগুলো পরিষ্কার করি
-      if (payload.oldCommonId) {
-        const targetSet = new Set(payload.commonTargets || []);
-        Object.keys(nextEntries).forEach(k => {
-          const e = nextEntries[k];
-          if (!e || e.commonId !== payload.oldCommonId) return;
-          const [, kSec, kP] = k.split("|");
-          if (Number(kP) !== payload.period || !targetSet.has(kSec)) {
-            delete nextEntries[k];
+      daysToSave.forEach((targetDay, dIdx) => {
+        // ১. পুরনো কমন-ক্লাসের যেসব শাখা আন-চেক করা হয়েছে সেগুলো পরিষ্কার করি
+        if (payload.oldCommonId) {
+          const targetSet = new Set(payload.commonTargets || []);
+          Object.keys(nextEntries).forEach(k => {
+            const e = nextEntries[k];
+            if (!e || e.commonId !== payload.oldCommonId) return;
+            const [kDay, kSec, kP] = k.split("|");
+            if (kDay === targetDay && (Number(kP) !== payload.period || !targetSet.has(kSec))) {
+              delete nextEntries[k];
+            }
+          });
+        }
+
+        const targets = payload.commonTargets && payload.commonTargets.length
+          ? payload.commonTargets
+          : [payload.secKey];
+        const dayCommonId = payload.commonId
+          ? (daysToSave.length > 1 ? `${payload.commonId}-d${dIdx}` : payload.commonId)
+          : "";
+
+        targets.forEach(tSecKey => {
+          for (let prevP = 1; prevP < payload.period; prevP++) {
+            const pk = cellSlotKey(targetDay, tSecKey, prevP);
+            const pe = nextEntries[pk];
+            if (pe && prevP + (pe.span || 1) - 1 >= payload.period) {
+              nextEntries[pk] = { ...pe, span: payload.period - prevP };
+            }
           }
+          for (let offset = 1; offset < payload.span; offset++) {
+            delete nextEntries[cellSlotKey(targetDay, tSecKey, payload.period + offset)];
+          }
+          const meta = secMetaByKey.get(tSecKey);
+          nextEntries[cellSlotKey(targetDay, tSecKey, payload.period)] = {
+            span: payload.span,
+            items: payload.items,
+            commonId: dayCommonId,
+            commonTargets: dayCommonId ? targets : [],
+            room: payload.room || (meta && meta.room) || "",
+            note: payload.note || "",
+            adminApprovedStreak: Boolean(payload.adminApprovedStreak),
+            approvedStreakLimit: payload.adminApprovedStreak ? Number(payload.approvedStreakLimit) || 3 : 0
+          };
         });
-      }
-
-      // ২. নতুন টার্গেট শাখাগুলোতে (১টি বা কমন ক্লাসের সব শাখায়) বসাই ও মার্জ করা স্প্যানের ভেতরের পুরনো স্লট পরিষ্কার করি
-      const targets = payload.commonTargets && payload.commonTargets.length
-        ? payload.commonTargets
-        : [payload.secKey];
-
-      targets.forEach(tSecKey => {
-        // যদি tSecKey-তে আগে কোনো পূর্ববর্তী স্প্যানের অংশ হিসেবে period ঢাকা থাকে, তার স্প্যান ছোট করে দিই
-        for (let prevP = 1; prevP < payload.period; prevP++) {
-          const pk = cellSlotKey(payload.day, tSecKey, prevP);
-          const pe = nextEntries[pk];
-          if (pe && prevP + (pe.span || 1) - 1 >= payload.period) {
-            nextEntries[pk] = { ...pe, span: payload.period - prevP };
-          }
-        }
-        // মার্জ করা স্প্যানের ভেতরের পরের পিরিয়ডগুলো মুছে দিই
-        for (let offset = 1; offset < payload.span; offset++) {
-          delete nextEntries[cellSlotKey(payload.day, tSecKey, payload.period + offset)];
-        }
-        const meta = secMetaByKey.get(tSecKey);
-        nextEntries[cellSlotKey(payload.day, tSecKey, payload.period)] = {
-          span: payload.span,
-          items: payload.items,
-          commonId: payload.commonId || "",
-          commonTargets: payload.commonId ? targets : [],
-          room: payload.room || (meta && meta.room) || "",
-          note: payload.note || "",
-          adminApprovedStreak: Boolean(payload.adminApprovedStreak),
-          approvedStreakLimit: payload.adminApprovedStreak ? Number(payload.approvedStreakLimit) || 3 : 0
-        };
       });
 
       return { ...prev, entries: nextEntries };
     });
 
     setSlotModal(null);
-    toast(
-      payload.commonId
-        ? `${toBnStr(payload.commonTargets.length)}টি শাখায় কমন ক্লাস সংরক্ষিত হয়েছে`
-        : payload.span > 1
-          ? `${toBnStr(payload.span)} পিরিয়ড মার্জ করে সংরক্ষিত হয়েছে`
-          : "রুটিন পিরিয়ড সংরক্ষিত হয়েছে"
-    );
+    if (daysToSave.length > 1) {
+      toast(`${payload.allDaysRangeLabel || "সব দিন"} (${toBnStr(daysToSave.length)} দিন)-এর রুটিন স্লট সংরক্ষিত হয়েছে!`);
+    } else {
+      toast(
+        payload.commonId
+          ? `${toBnStr(payload.commonTargets.length)}টি শাখায় কমন ক্লাস সংরক্ষিত হয়েছে`
+          : payload.span > 1
+            ? `${toBnStr(payload.span)} পিরিয়ড মার্জ করে সংরক্ষিত হয়েছে`
+            : "রুটিন পিরিয়ড সংরক্ষিত হয়েছে"
+      );
+    }
   };
 
-  const deleteRoutineSlot = ({ day, secKey, period, oldCommonId }) => {
+  const deleteRoutineSlot = ({ day, days, secKey, period, oldCommonId }) => {
+    const daysToDelete = Array.isArray(days) && days.length ? days : [day];
     updateRoutine(prev => {
       const nextEntries = { ...prev.entries };
-      if (oldCommonId) {
-        Object.keys(nextEntries).forEach(k => {
-          const e = nextEntries[k];
-          if (e && e.commonId === oldCommonId) delete nextEntries[k];
-        });
-      }
-      delete nextEntries[cellSlotKey(day, secKey, period)];
+      daysToDelete.forEach(targetDay => {
+        if (oldCommonId && daysToDelete.length === 1) {
+          Object.keys(nextEntries).forEach(k => {
+            const e = nextEntries[k];
+            if (e && e.commonId === oldCommonId) delete nextEntries[k];
+          });
+        }
+        const entryAt = nextEntries[cellSlotKey(targetDay, secKey, period)];
+        if (entryAt && entryAt.commonId) {
+          const cid = entryAt.commonId;
+          Object.keys(nextEntries).forEach(k => {
+            const e = nextEntries[k];
+            if (e && e.commonId === cid) delete nextEntries[k];
+          });
+        }
+        delete nextEntries[cellSlotKey(targetDay, secKey, period)];
+      });
       return { ...prev, entries: nextEntries };
     });
     setSlotModal(null);
-    toast("রুটিন স্লট মুছে ফেলা হয়েছে");
+    toast(daysToDelete.length > 1 ? "সকল দিনের এই রুটিন স্লট মুছে ফেলা হয়েছে" : "রুটিন স্লট মুছে ফেলা হয়েছে");
   };
 
   const clearTeacherFromRoutine = teacherId => {
