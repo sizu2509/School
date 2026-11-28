@@ -105,12 +105,12 @@ function normalizeHeaderKey(h) {
 }
 
 const STUDENT_HEADER_ALIASES = {
-  name: ["নাম", "শিক্ষার্থীর নাম", "ছাত্র/ছাত্রীর নাম", "ছাত্রের নাম", "ছাত্রীর নাম", "student name", "name", "full name"],
-  cls: ["শ্রেণি", "শ্রেণী", "ক্লাস", "class", "cls", "grade", "standard"],
-  roll: ["রোল", "রোল নং", "রোল নম্বর", "roll", "roll no", "roll number", "id", "ক্রমিক", "ক্রমিক নং"],
-  section: ["শাখা", "বিভাগ", "বিভাগ / শাখা", "section", "sec", "group", "stream"],
-  guardian: ["অভিভাবক", "অভিভাবকের নাম", "পিতার নাম", "পিতা/অভিভাবক", "মাতার নাম", "guardian", "guardian name", "father", "father name", "parent"],
-  phone: ["মোবাইল", "ফোন", "মোবাইল নং", "অভিভাবকের মোবাইল", "ফোন নম্বর", "যোগাযোগ", "phone", "mobile", "contact", "phone number", "mobile no"],
+  name: ["নাম", "শিক্ষার্থীর নাম", "শিক্ষার্থী", "ছাত্র/ছাত্রীর নাম", "ছাত্র/ছাত্রী", "ছাত্রের নাম", "ছাত্রীর নাম", "ছাত্র", "ছাত্রী", "student name", "name of student", "student's name", "student", "name", "full name", "candidate"],
+  cls: ["শ্রেণি", "শ্রেণী", "ক্লাস", "class", "class name", "cls", "grade", "standard"],
+  roll: ["রোল", "রোল নং", "রোল নম্বর", "roll", "roll no", "roll no.", "roll number", "id", "student id", "ক্রমিক", "ক্রমিক নং", "sl", "sl no"],
+  section: ["শাখা", "বিভাগ", "বিভাগ / শাখা", "section", "sec", "sec.", "group", "stream"],
+  guardian: ["অভিভাবক", "অভিভাবকের নাম", "পিতার নাম", "পিতা/অভিভাবক", "মাতার নাম", "guardian", "guardian name", "guardian's name", "father", "father name", "father's name", "mother name", "parent"],
+  phone: ["মোবাইল", "ফোন", "মোবাইল নং", "অভিভাবকের মোবাইল", "ফোন নম্বর", "যোগাযোগ", "phone", "phone no", "mobile", "mobile no.", "contact", "phone number", "mobile no", "cell"],
   payable: ["মোট ফি", "নির্ধারিত ফি", "মোট খরচ", "বার্ষিক ফি", "payable", "total fee", "fee", "fees"],
   paid: ["জমা", "ভর্তিকালীন জমা", "পরিশোধিত", "paid", "deposit", "paid amount"],
 };
@@ -210,18 +210,50 @@ function detectHeaderRowIndex(rows, aliasMap) {
   return { headerIdx: bestIdx, matchedColumns: bestScore };
 }
 
-export function parseStudentsFromRows(rows, availableClasses = [], defaultPayable = 12000) {
+export function parseStudentsFromRows(rows, availableClasses = [], optionsOrPayable = 12000) {
+  const opts = typeof optionsOrPayable === "number"
+    ? { defaultPayable: optionsOrPayable }
+    : (optionsOrPayable || {});
+  const defaultPayable = typeof opts.defaultPayable === "number" ? opts.defaultPayable : 12000;
+  const fixedClass = opts.targetClass && opts.targetClass !== "__AUTO__" ? opts.targetClass : "";
+  const fixedSection = fixedClass && opts.targetSection && opts.targetSection !== "__AUTO__" ? opts.targetSection : "";
+
   const { headerIdx, matchedColumns } = detectHeaderRowIndex(rows, STUDENT_HEADER_ALIASES);
+  let startRowIdx = headerIdx + 1;
+  let colMap = [];
+
   if (matchedColumns <= 0) {
-    throw new Error("কলামের শিরোনাম চেনা যায়নি। দয়া করে 'নাম', 'শ্রেণি', 'রোল', 'শাখা', 'অভিভাবক', 'মোবাইল' কলাম রাখুন অথবা নমুনা ফাইল ডাউনলোড করুন।");
+    const firstNonEmpty = rows.findIndex(r => Array.isArray(r) && r.some(v => String(v == null ? "" : v).trim() !== ""));
+    if (firstNonEmpty < 0) {
+      throw new Error("ফাইলে কোনো শিক্ষার্থীর তথ্য পাওয়া যায়নি।");
+    }
+    const sampleRow = rows[firstNonEmpty] || [];
+    const col0Text = String(sampleRow[0] == null ? "" : sampleRow[0]).trim();
+    const col1Text = String(sampleRow[1] == null ? "" : sampleRow[1]).trim();
+    const col0IsNum = /^\d+$/.test(bnToEnDigits(col0Text));
+    if (col0IsNum && col1Text) {
+      colMap = ["roll", "name", "guardian", "phone"];
+      startRowIdx = firstNonEmpty;
+    } else if (col0Text) {
+      colMap = ["name", "roll", "guardian", "phone"];
+      startRowIdx = firstNonEmpty;
+    } else {
+      throw new Error("কলামের শিরোনাম চেনা যায়নি। দয়া করে 'নাম' / 'Name', 'রোল' / 'Roll', 'অভিভাবক' / 'Guardian', 'মোবাইল' / 'Phone' কলাম রাখুন অথবা নমুনা ফাইল ডাউনলোড করুন।");
+    }
+  } else {
+    const headerRow = rows[headerIdx] || [];
+    colMap = headerRow.map(h => resolveFieldKey(h, STUDENT_HEADER_ALIASES));
+    if (!colMap.includes("name")) {
+      const firstEmptyOrUnknown = colMap.findIndex(k => !k);
+      if (firstEmptyOrUnknown >= 0) colMap[firstEmptyOrUnknown] = "name";
+    }
   }
-  const headerRow = rows[headerIdx] || [];
-  const colMap = headerRow.map(h => resolveFieldKey(h, STUDENT_HEADER_ALIASES));
-  const defaultCls = availableClasses[0] || "ষষ্ঠ";
+
+  const defaultCls = fixedClass || availableClasses[0] || "ষষ্ঠ";
   const records = [];
   let skipped = 0;
 
-  for (let i = headerIdx + 1; i < rows.length; i++) {
+  for (let i = startRowIdx; i < rows.length; i++) {
     const row = Array.isArray(rows[i]) ? rows[i] : [];
     const hasAny = row.some(v => String(v == null ? "" : v).trim() !== "");
     if (!hasAny) continue;
@@ -237,9 +269,9 @@ export function parseStudentsFromRows(rows, availableClasses = [], defaultPayabl
       continue;
     }
 
-    const cls = normalizeClassValue(rawObj.cls, availableClasses) || defaultCls;
+    const cls = fixedClass || normalizeClassValue(rawObj.cls, availableClasses) || defaultCls;
     const roll = Math.max(0, Math.round(parseFlexibleNumber(rawObj.roll, records.length + 1)));
-    const section = normalizeSectionValue(rawObj.section) || "ক";
+    const section = fixedSection || normalizeSectionValue(rawObj.section) || "ক";
     const guardian = String(rawObj.guardian == null ? "" : rawObj.guardian).trim();
     const phone = normalizePhone(rawObj.phone);
     const payable = Math.max(0, Math.round(parseFlexibleNumber(rawObj.payable, defaultPayable)));
@@ -349,14 +381,16 @@ export function parseTeachersFromRows(rows, availableClasses = []) {
   };
 }
 
-export function downloadBulkTemplate(type, format = "xlsx") {
+export function downloadBulkTemplate(type, format = "xlsx", targetClass = "", targetSection = "") {
   const isStudents = type === "students";
+  const sampleCls = targetClass && targetClass !== "__AUTO__" ? targetClass : "ষষ্ঠ";
+  const sampleSec = targetClass && targetClass !== "__AUTO__" && targetSection && targetSection !== "__AUTO__" ? targetSection : "ক";
   const aoa = isStudents
     ? [
         ["নাম", "শ্রেণি", "রোল", "শাখা", "অভিভাবক", "মোবাইল", "জমা"],
-        ["তাসনিম তাবাসসুম", "ষষ্ঠ", "১০১", "ক", "মোঃ কামরুল হাসান", "01711000001", "5000"],
-        ["রাফিউল ইসলাম", "সপ্তম", "২০২", "খ", "মোঃ সাইফুল ইসলাম", "01812000002", "4000"],
-        ["নুসরাত জাহান মিম", "অষ্টম", "৩০১", "ক", "জাহিদুল ইসলাম", "01913000003", "6000"],
+        ["তাসনিম তাবাসসুম", sampleCls, "১০১", sampleSec, "মোঃ কামরুল হাসান", "01711000001", "5000"],
+        ["রাফিউল ইসলাম", targetClass && targetClass !== "__AUTO__" ? sampleCls : "সপ্তম", targetClass && targetClass !== "__AUTO__" ? "১০২" : "২০২", targetClass && targetClass !== "__AUTO__" ? sampleSec : "খ", "মোঃ সাইফুল ইসলাম", "01812000002", "4000"],
+        ["নুসরাত জাহান মিম", targetClass && targetClass !== "__AUTO__" ? sampleCls : "অষ্টম", targetClass && targetClass !== "__AUTO__" ? "১০৩" : "৩০১", sampleSec, "জাহিদুল ইসলাম", "01913000003", "6000"],
       ]
     : [
         ["শিক্ষকের নাম", "কোড", "পদবি", "বিষয়", "অতিরিক্ত বিষয়", "যোগ্যতা", "মোবাইল", "শ্রেণি শিক্ষক", "ক্লাস নেন", "মাসিক বেতন", "মাসিক ভাতা", "যোগদানের তারিখ"],

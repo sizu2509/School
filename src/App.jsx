@@ -2436,9 +2436,11 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
     setShowStudentForm(false); setEditStudent(null);
   };
   const delStudent = id => patch({ students: data.students.filter(x => x.id !== id), studentCosts: (data.studentCosts || []).filter(c => c.studentId !== id) });
-  const importBulkStudents = (records, mode) => {
+  const importBulkStudents = (records, mode, targetClass, targetSection) => {
     const cleanRows = (records || []).filter(r => r && r.name && r.name.trim());
     if (cleanRows.length === 0) return;
+    const fixedClass = targetClass && targetClass !== "__AUTO__" ? targetClass : "";
+    const fixedSection = fixedClass && targetSection && targetSection !== "__AUTO__" ? targetSection : "";
     const admDate = todayStr();
     const admTime = nowTimeBn();
     const useCostMatrix = S.showYearlyCostAtAdmission !== false;
@@ -2455,9 +2457,9 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
       nextStudents.push({
         id: nid,
         name: r.name.trim(),
-        cls: r.cls || "ষষ্ঠ",
+        cls: fixedClass || r.cls || "ষষ্ঠ",
         roll: +r.roll || (idx + 1),
-        section: r.section || "ক",
+        section: fixedSection || r.section || "ক",
         guardian: r.guardian || "",
         phone: r.phone || "",
         photo: r.photo || "",
@@ -2471,20 +2473,39 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
       });
     });
     const isReplace = mode === "replace";
-    const keptCosts = isReplace ? [] : (data.studentCosts || []);
+    const existingStudents = data.students || [];
+    let keptStudents = existingStudents;
+    let removedIds = new Set();
+    if (isReplace) {
+      if (fixedClass) {
+        removedIds = new Set(
+          existingStudents
+            .filter(x => x.cls === fixedClass && (!fixedSection || (x.section || "ক") === fixedSection))
+            .map(x => x.id)
+        );
+        keptStudents = existingStudents.filter(x => !removedIds.has(x.id));
+      } else {
+        removedIds = new Set(existingStudents.map(x => x.id));
+        keptStudents = [];
+      }
+    }
+    const keptCosts = isReplace
+      ? (data.studentCosts || []).filter(c => !removedIds.has(c.studentId))
+      : (data.studentCosts || []);
     patch({
-      students: isReplace ? nextStudents : [...(data.students || []), ...nextStudents],
+      students: isReplace ? [...keptStudents, ...nextStudents] : [...existingStudents, ...nextStudents],
       studentCosts: [...keptCosts, ...nextCosts],
       paymentHistory: [...nextLogs, ...(data.paymentHistory || [])],
     });
-    setStudentClassFilter("সব");
-    setStudentSectionFilter("সব");
+    setStudentClassFilter(fixedClass || "সব");
+    setStudentSectionFilter(fixedSection || "সব");
     setSearch("");
     setBulkImportType(null);
+    const scopeLabel = fixedClass ? `${fixedClass}${fixedSection ? ` (${fixedSection})` : ""} শ্রেণিতে ` : "";
     toast(
       isReplace
-        ? `${toBnNum(nextStudents.length)} জন শিক্ষার্থীর নতুন তালিকা ওয়েবসাইটে যুক্ত হয়েছে`
-        : `তালিকায় আরও ${toBnNum(nextStudents.length)} জন শিক্ষার্থী যুক্ত হয়েছে`
+        ? `${scopeLabel}${toBnNum(nextStudents.length)} জন শিক্ষার্থীর নতুন তালিকা যুক্ত হয়েছে`
+        : `${scopeLabel}আরও ${toBnNum(nextStudents.length)} জন শিক্ষার্থী যুক্ত হয়েছে`
     );
   };
   const importBulkTeachers = (records, mode) => {
@@ -6005,10 +6026,12 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
         <BulkImportModal
           type={bulkImportType}
           classes={data.classes}
+          defaultClass={studentClassFilter}
+          defaultSection={studentSectionFilter}
           existingCount={bulkImportType === "students" ? (data.students || []).length : (data.teachers || []).length}
           close={() => setBulkImportType(null)}
-          onImport={(records, mode) => {
-            if (bulkImportType === "students") importBulkStudents(records, mode);
+          onImport={(records, mode, targetClass, targetSection) => {
+            if (bulkImportType === "students") importBulkStudents(records, mode, targetClass, targetSection);
             else importBulkTeachers(records, mode);
           }}
         />
@@ -6340,14 +6363,39 @@ function StudentForm({ initial, classes, close, save, costTypes, showCost, exist
     </ModalForm>
   );
 }
-function BulkImportModal({ type, classes, existingCount, close, onImport }) {
+function BulkImportModal({ type, classes, defaultClass, defaultSection, existingCount, close, onImport }) {
   const isStudents = type === "students";
   const classOpts = useMemo(() => classOptionsOf({ classes }), [classes]);
+  const sectionsFor = clsName => {
+    if (!clsName || clsName === "__AUTO__") return ["ক"];
+    const matched = (classes || []).find(c => c.name === clsName);
+    return matched ? normalizeClassSections(matched).map(s => s.name) : defaultSectionNamesForClass(clsName);
+  };
+  const initCls = (defaultClass && defaultClass !== "সব" && classOpts.includes(defaultClass))
+    ? defaultClass
+    : (classOpts[0] || "ষষ্ঠ");
+  const initSecOpts = sectionsFor(initCls);
+  const initSec = (defaultSection && defaultSection !== "সব" && initSecOpts.includes(defaultSection))
+    ? defaultSection
+    : (initSecOpts[0] || "ক");
+
+  const [targetClass, setTargetClass] = useState(initCls);
+  const [targetSection, setTargetSection] = useState(initSec);
   const [fileName, setFileName] = useState("");
   const [parsing, setParsing] = useState(false);
   const [error, setError] = useState("");
   const [parsed, setParsed] = useState(null);
   const [mode, setMode] = useState(existingCount > 0 ? "append" : "replace");
+
+  const secOpts = sectionsFor(targetClass);
+  const onTargetClassChange = nextCls => {
+    setTargetClass(nextCls);
+    if (nextCls === "__AUTO__") return;
+    const nextSecs = sectionsFor(nextCls);
+    if (!nextSecs.includes(targetSection)) {
+      setTargetSection(nextSecs[0] || "ক");
+    }
+  };
 
   const handleFileChange = async e => {
     const file = e.target.files && e.target.files[0];
@@ -6359,7 +6407,7 @@ function BulkImportModal({ type, classes, existingCount, close, onImport }) {
     try {
       const sheet = await parseSpreadsheetFile(file);
       const res = isStudents
-        ? parseStudentsFromRows(sheet.rows, classOpts)
+        ? parseStudentsFromRows(sheet.rows, classOpts, { targetClass, targetSection })
         : parseTeachersFromRows(sheet.rows, classOpts);
       if (!res.records || res.records.length === 0) {
         setError("ফাইলটি পড়া হয়েছে, কিন্তু কোনো বৈধ তথ্য (নামসহ সারি) পাওয়া যায়নি।");
@@ -6373,31 +6421,64 @@ function BulkImportModal({ type, classes, existingCount, close, onImport }) {
     }
   };
 
+  const previewRecords = useMemo(() => {
+    if (!parsed || !parsed.records) return [];
+    if (!isStudents || targetClass === "__AUTO__") return parsed.records;
+    return parsed.records.map(r => ({
+      ...r,
+      cls: targetClass,
+      section: targetSection || r.section || "ক",
+    }));
+  }, [parsed, isStudents, targetClass, targetSection]);
+
   return (
     <div className="modal-bg" onClick={e => { if (e.target === e.currentTarget) close(); }}>
       <div className="modal" style={{ maxWidth: 840 }}>
         <h2>{isStudents ? "শিক্ষার্থী তালিকা আপলোড (Excel / CSV)" : "শিক্ষক তালিকা আপলোড (Excel / CSV)"}</h2>
         <p className="sub">
           {isStudents
-            ? "Excel (.xlsx, .xls) বা CSV (.csv) ফাইল আপলোড করলে সকল শিক্ষার্থী সাথে সাথে ওয়েবসাইটের শিক্ষার্থী তালিকায় দেখাবে।"
+            ? "প্রথমে শ্রেণি ও শাখা নির্বাচন করুন, এরপর বাংলা বা ইংরেজি ফরম্যাটের Excel (.xlsx, .xls) বা CSV (.csv) ফাইল আপলোড করলে তালিকাটি নির্বাচিত শ্রেণিতে যোগ হবে।"
             : "Excel (.xlsx, .xls) বা CSV (.csv) ফাইল আপলোড করলে সকল শিক্ষক ওয়েবসাইটের শিক্ষক তালিকায় এবং পাবলিক ওয়েবসাইটে দেখাবে।"}
         </p>
 
+        {isStudents && (
+          <div className="form-grid" style={{ marginBottom: 14 }}>
+            <Field label="১. শ্রেণি নির্বাচন করুন *">
+              <select value={targetClass} onChange={e => onTargetClassChange(e.target.value)}>
+                {classOpts.map(c => <option key={c} value={c}>{c} শ্রেণি</option>)}
+                <option value="__AUTO__">ফাইলের শ্রেণি অনুযায়ী (স্বয়ংক্রিয়)</option>
+              </select>
+            </Field>
+            <Field label={targetClass !== "__AUTO__" && isGroupClass(targetClass) ? "২. বিভাগ / শাখা নির্বাচন করুন *" : "২. শাখা নির্বাচন করুন *"}>
+              {targetClass === "__AUTO__" ? (
+                <select value="__AUTO__" disabled>
+                  <option value="__AUTO__">ফাইলের শাখা অনুযায়ী</option>
+                </select>
+              ) : (
+                <select value={targetSection} onChange={e => setTargetSection(e.target.value)}>
+                  {Array.from(new Set([...secOpts, targetSection].filter(Boolean))).map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              )}
+            </Field>
+          </div>
+        )}
+
         <div className="note-box" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 0, marginBottom: 14 }}>
           <div style={{ fontSize: "13px" }}>
-            <b>সহজ নমুনা ফাইল:</b> বাংলা বা ইংরেজি হেডারসহ{" "}
+            <b>সহজ নমুনা ফাইল:</b> বাংলা বা ইংরেজি ফরম্যাটে{" "}
             {isStudents
-              ? "নাম, শ্রেণি, রোল, শাখা, অভিভাবক, মোবাইল, জমা"
-              : "শিক্ষকের নাম, কোড, পদবি, বিষয়, যোগ্যতা, মোবাইল, শ্রেণি শিক্ষক, মাসিক বেতন"}{" "}
-            কলাম ব্যবহার করুন।
+              ? "নাম (Name), রোল (Roll), অভিভাবক (Guardian), মোবাইল (Phone), জমা (Paid) কলাম ব্যবহার করুন।"
+              : "শিক্ষকের নাম, কোড, পদবি, বিষয়, যোগ্যতা, মোবাইল, শ্রেণি শিক্ষক, মাসিক বেতন কলাম ব্যবহার করুন।"}
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <button type="button" className="mini-btn" onClick={() => downloadBulkTemplate(type, "xlsx")}>⬇ নমুনা Excel (.xlsx)</button>
-            <button type="button" className="mini-btn" onClick={() => downloadBulkTemplate(type, "csv")}>⬇ নমুনা CSV (.csv)</button>
+            <button type="button" className="mini-btn" onClick={() => downloadBulkTemplate(type, "xlsx", targetClass, targetSection)}>⬇ নমুনা Excel (.xlsx)</button>
+            <button type="button" className="mini-btn" onClick={() => downloadBulkTemplate(type, "csv", targetClass, targetSection)}>⬇ নমুনা CSV (.csv)</button>
           </div>
         </div>
 
-        <label style={{ display: "block", marginBottom: 6 }}>Excel বা CSV ফাইল নির্বাচন করুন (.xlsx, .xls, .csv)</label>
+        <label style={{ display: "block", marginBottom: 6 }}>
+          {isStudents ? "৩. Excel বা CSV ফাইল নির্বাচন করুন (.xlsx, .xls, .csv)" : "Excel বা CSV ফাইল নির্বাচন করুন (.xlsx, .xls, .csv)"}
+        </label>
         <input type="file" accept=".xlsx,.xls,.csv,.tsv" onChange={handleFileChange} style={{ marginBottom: 12 }} />
 
         {parsing && <div className="note-box">ফাইল পড়া হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন…</div>}
@@ -6408,7 +6489,10 @@ function BulkImportModal({ type, classes, existingCount, close, onImport }) {
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
               <div>
                 <span className="pill pill-ok">ফাইল: {fileName}</span>{" "}
-                <span className="pill pill-ok">শনাক্ত হয়েছে: {toBnNum(parsed.records.length)} জন</span>
+                <span className="pill pill-ok">শনাক্ত হয়েছে: {toBnNum(previewRecords.length)} জন</span>
+                {isStudents && targetClass !== "__AUTO__" && (
+                  <span className="pill pill-ok" style={{ marginLeft: 6 }}>লক্ষ্য: {targetClass} ({targetSection})</span>
+                )}
                 {parsed.skipped > 0 && <span className="pill pill-warn" style={{ marginLeft: 6 }}>বাদ পড়েছে: {toBnNum(parsed.skipped)} সারি</span>}
               </div>
               {existingCount > 0 && (
@@ -6419,7 +6503,9 @@ function BulkImportModal({ type, classes, existingCount, close, onImport }) {
                   </label>
                   <label style={{ display: "flex", alignItems: "center", gap: 5, margin: 0, cursor: "pointer" }}>
                     <input type="radio" name="bulkImportMode" checked={mode === "replace"} onChange={() => setMode("replace")} style={{ width: "auto" }} />
-                    আগের তালিকা বদলে নতুন বসান
+                    {isStudents && targetClass !== "__AUTO__"
+                      ? `${targetClass} (${targetSection}) শাখার আগের তালিকা বদলে নতুন বসান`
+                      : "আগের তালিকা বদলে নতুন বসান"}
                   </label>
                 </div>
               )}
@@ -6433,7 +6519,7 @@ function BulkImportModal({ type, classes, existingCount, close, onImport }) {
                     : <tr><th>#</th><th>নাম</th><th>কোড</th><th>পদবি</th><th>বিষয়</th><th>যোগ্যতা</th><th>মোবাইল</th><th>শ্রেণি শিক্ষক</th><th>বেতন</th></tr>}
                 </thead>
                 <tbody>
-                  {parsed.records.slice(0, 60).map((r, i) => isStudents ? (
+                  {previewRecords.slice(0, 60).map((r, i) => isStudents ? (
                     <tr key={i}>
                       <td>{toBnNum(i + 1)}</td>
                       <td><b>{r.name}</b></td>
@@ -6460,9 +6546,9 @@ function BulkImportModal({ type, classes, existingCount, close, onImport }) {
                 </tbody>
               </table>
             </div>
-            {parsed.records.length > 60 && (
+            {previewRecords.length > 60 && (
               <div style={{ fontSize: "12.5px", color: "var(--muted)", marginBottom: 10 }}>
-                প্রিভিউতে প্রথম ৬০ জন দেখানো হয়েছে; সংরক্ষণ করলে সব {toBnNum(parsed.records.length)} জন যুক্ত হবে।
+                প্রিভিউতে প্রথম ৬০ জন দেখানো হয়েছে; সংরক্ষণ করলে সব {toBnNum(previewRecords.length)} জন যুক্ত হবে।
               </div>
             )}
           </div>
@@ -6473,10 +6559,14 @@ function BulkImportModal({ type, classes, existingCount, close, onImport }) {
             type="button"
             className="btn btn-brand"
             style={{ flex: 1 }}
-            disabled={!parsed || !parsed.records || parsed.records.length === 0}
-            onClick={() => parsed && onImport(parsed.records, mode)}
+            disabled={!parsed || previewRecords.length === 0}
+            onClick={() => parsed && onImport(previewRecords, mode, targetClass, targetSection)}
           >
-            {parsed ? `✓ ${toBnNum(parsed.records.length)} জন ওয়েবসাইটে যোগ করুন` : "প্রথমে ফাইল নির্বাচন করুন"}
+            {parsed
+              ? (isStudents && targetClass !== "__AUTO__"
+                  ? `✓ ${targetClass} (${targetSection}) শ্রেণিতে ${toBnNum(previewRecords.length)} জন যোগ করুন`
+                  : `✓ ${toBnNum(previewRecords.length)} জন ওয়েবসাইটে যোগ করুন`)
+              : "প্রথমে ফাইল নির্বাচন করুন"}
           </button>
           <button type="button" className="btn btn-ghost" onClick={close}>বাতিল</button>
         </div>
