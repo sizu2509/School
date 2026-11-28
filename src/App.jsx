@@ -3,6 +3,7 @@ import QRCode from "qrcode";
 import jsQR from "jsqr";
 import RoutineModule from "./RoutineModule.jsx";
 import { createDefaultRoutineData, normalizeRoutineState } from "./routineUtils.js";
+import { parseSpreadsheetFile, parseStudentsFromRows, parseTeachersFromRows, downloadBulkTemplate } from "./bulkImportUtils.js";
 import "./index.css";
 
 /* ছবি: এই ফাইলগুলো প্রজেক্টের public/assets/ ফোল্ডারে রাখুন
@@ -2154,6 +2155,7 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
   const [showStudentForm, setShowStudentForm] = useState(false);
   const [teacherForm, setTeacherForm] = useState(false);
   const [editTeacher, setEditTeacher] = useState(null);
+  const [bulkImportType, setBulkImportType] = useState(null);
   const [teacherPresetSubject, setTeacherPresetSubject] = useState("");
   const [profileTeacherId, setProfileTeacherId] = useState(null);
   const [idCardTeacherId, setIdCardTeacherId] = useState(null);
@@ -2434,6 +2436,96 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
     setShowStudentForm(false); setEditStudent(null);
   };
   const delStudent = id => patch({ students: data.students.filter(x => x.id !== id), studentCosts: (data.studentCosts || []).filter(c => c.studentId !== id) });
+  const importBulkStudents = (records, mode) => {
+    const cleanRows = (records || []).filter(r => r && r.name && r.name.trim());
+    if (cleanRows.length === 0) return;
+    const admDate = todayStr();
+    const admTime = nowTimeBn();
+    const useCostMatrix = S.showYearlyCostAtAdmission !== false;
+    const nextStudents = [];
+    const nextCosts = [];
+    const nextLogs = [];
+    cleanRows.forEach((r, idx) => {
+      const nid = uid();
+      const initPaid = +r.paid || 0;
+      const items = makeStudentCosts(nid, costTypes, initPaid);
+      const tot = costTotalsOf(items);
+      const payable = useCostMatrix ? tot.total : (+r.payable || tot.total || 12000);
+      const paid = useCostMatrix ? tot.paid : Math.min(payable, initPaid);
+      nextStudents.push({
+        id: nid,
+        name: r.name.trim(),
+        cls: r.cls || "ষষ্ঠ",
+        roll: +r.roll || (idx + 1),
+        section: r.section || "ক",
+        guardian: r.guardian || "",
+        phone: r.phone || "",
+        photo: r.photo || "",
+        admissionDate: admDate,
+        payable,
+        paid,
+      });
+      nextCosts.push(...items);
+      items.filter(c => (+c.paid || 0) > 0).forEach(c => {
+        nextLogs.push({ id: uid(), studentId: nid, date: admDate, time: admTime, head: c.name, amount: +c.paid, note: "Excel/CSV আমদানি জমা" });
+      });
+    });
+    const isReplace = mode === "replace";
+    const keptCosts = isReplace ? [] : (data.studentCosts || []);
+    patch({
+      students: isReplace ? nextStudents : [...(data.students || []), ...nextStudents],
+      studentCosts: [...keptCosts, ...nextCosts],
+      paymentHistory: [...nextLogs, ...(data.paymentHistory || [])],
+    });
+    setStudentClassFilter("সব");
+    setStudentSectionFilter("সব");
+    setSearch("");
+    setBulkImportType(null);
+    toast(
+      isReplace
+        ? `${toBnNum(nextStudents.length)} জন শিক্ষার্থীর নতুন তালিকা ওয়েবসাইটে যুক্ত হয়েছে`
+        : `তালিকায় আরও ${toBnNum(nextStudents.length)} জন শিক্ষার্থী যুক্ত হয়েছে`
+    );
+  };
+  const importBulkTeachers = (records, mode) => {
+    const cleanRows = (records || []).filter(r => r && r.name && r.name.trim());
+    if (cleanRows.length === 0) return;
+    const normalizedAdded = cleanRows.map((r, idx) => {
+      const nid = uid();
+      const codeFallback = r.teacherCode || ("TCH-" + String(200 + idx + 1));
+      return normalizeTeacherRecord({ ...r, id: nid, teacherCode: codeFallback }, true);
+    });
+    const isReplace = mode === "replace";
+    const baseList = isReplace
+      ? []
+      : (data.teachers || []).map(x => normalizeTeacherRecord(x, true));
+    const slotOwners = new Map();
+    normalizedAdded.forEach(t => {
+      if (t.classTeacherClass) {
+        slotOwners.set(t.classTeacherClass + "::" + (t.classTeacherSection || "ক"), t.id);
+      }
+    });
+    const merged = [...baseList, ...normalizedAdded].map(t => {
+      if (!t.classTeacherClass) return t;
+      const key = t.classTeacherClass + "::" + (t.classTeacherSection || "ক");
+      const ownerId = slotOwners.get(key);
+      if (ownerId && ownerId !== t.id) {
+        return { ...t, classTeacherClass: "", classTeacherSection: "" };
+      }
+      if (!ownerId) slotOwners.set(key, t.id);
+      return t;
+    });
+    patch({ teachers: merged });
+    setTeacherSearch("");
+    setTeacherSubFilter("সব");
+    setTeacherClassFilter("সব");
+    setBulkImportType(null);
+    toast(
+      isReplace
+        ? `${toBnNum(normalizedAdded.length)} জন শিক্ষকের নতুন তালিকা ওয়েবসাইটে যুক্ত হয়েছে`
+        : `তালিকায় আরও ${toBnNum(normalizedAdded.length)} জন শিক্ষক যুক্ত হয়েছে`
+    );
+  };
   const studentSectionOptions = useMemo(() => {
     if (studentClassFilter === "সব") {
       const fromData = data.students.map(x => x.section).filter(Boolean);
@@ -3763,10 +3855,11 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
             <input type="search" placeholder="নাম, রোল বা অভিভাবক খুঁজুন…" value={search} onChange={e => setSearch(e.target.value)} />
             <span className="sp"></span>
             {hasVacantSeats && <button className="btn btn-accent" onClick={fillVacantSeats}>সব শ্রেণি ফুল করুন</button>}
+            <button type="button" className="btn btn-accent" onClick={() => setBulkImportType("students")}>📥 Excel / CSV আপলোড</button>
             <button className="btn btn-brand" onClick={() => { setEditStudent(null); setShowStudentForm(true); }}>+ নতুন শিক্ষার্থী</button>
           </div>
           {data.students.length === 0
-            ? <div className="card empty"><b>কোনো শিক্ষার্থী নেই</b>“নতুন শিক্ষার্থী” বোতামে যোগ করুন, অথবা সেটিংস থেকে নমুনা তথ্য বসান।</div>
+            ? <div className="card empty"><b>কোনো শিক্ষার্থী নেই</b>“+ নতুন শিক্ষার্থী” বোতামে যোগ করুন অথবা “📥 Excel / CSV আপলোড” করে তালিকা বসান।</div>
             : studentList.length === 0
               ? <div className="card empty"><b>কোনো শিক্ষার্থী পাওয়া যায়নি</b>নির্বাচিত শ্রেণি, শাখা বা অনুসন্ধান পরিবর্তন করে দেখুন।</div>
               : <div className="table-wrap"><table><thead><tr><th>নাম</th><th>শ্রেণি</th><th>রোল</th><th>শাখা</th><th>অভিভাবক</th><th>মোবাইল</th><th>বকেয়া</th><th>অ্যাকশন</th></tr></thead>
@@ -3874,11 +3967,12 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
               {missingDefaultSeeds.length > 0 && (
                 <button type="button" className="btn btn-accent btn-sm" onClick={fillAllSubjectTeachers}>+ সব বিষয়ের শিক্ষক</button>
               )}
+              <button type="button" className="btn btn-accent" onClick={() => setBulkImportType("teachers")}>📥 Excel / CSV আপলোড</button>
               <button type="button" className="btn btn-brand" onClick={() => { setEditTeacher(null); setTeacherPresetSubject(""); setTeacherForm(true); }}>+ নতুন শিক্ষক</button>
             </div>
 
             {filteredTeachers.length === 0
-              ? <div className="card empty"><b>কোনো শিক্ষক পাওয়া যায়নি</b>অনুসন্ধান পরিবর্তন করুন অথবা “+ নতুন শিক্ষক” বা “+ সব বিষয়ের শিক্ষক পূরণ করুন” ব্যবহার করুন।</div>
+              ? <div className="card empty"><b>কোনো শিক্ষক পাওয়া যায়নি</b>অনুসন্ধান পরিবর্তন করুন অথবা “📥 Excel / CSV আপলোড”, “+ নতুন শিক্ষক” বা “+ সব বিষয়ের শিক্ষক পূরণ করুন” ব্যবহার করুন।</div>
               : <div className="grid3">
                   {filteredTeachers.map(t => {
                     const careerTotal = (t.salaryHistory || []).reduce((acc, r) => acc + (+r.basic || 0) + (+r.allowance || 0) + (+r.bonus || 0) - (+r.deduction || 0), 0);
@@ -5907,6 +6001,18 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
           setTeacherForm(false); setEditTeacher(null); setTeacherPresetSubject("");
         }}
       />}
+      {bulkImportType && (
+        <BulkImportModal
+          type={bulkImportType}
+          classes={data.classes}
+          existingCount={bulkImportType === "students" ? (data.students || []).length : (data.teachers || []).length}
+          close={() => setBulkImportType(null)}
+          onImport={(records, mode) => {
+            if (bulkImportType === "students") importBulkStudents(records, mode);
+            else importBulkTeachers(records, mode);
+          }}
+        />
+      )}
       {profileTeacherId && (() => {
         const rawT = data.teachers.find(t => t.id === profileTeacherId);
         if (!rawT) return null;
@@ -6232,6 +6338,150 @@ function StudentForm({ initial, classes, close, save, costTypes, showCost, exist
         </div>
       </Field>}
     </ModalForm>
+  );
+}
+function BulkImportModal({ type, classes, existingCount, close, onImport }) {
+  const isStudents = type === "students";
+  const classOpts = useMemo(() => classOptionsOf({ classes }), [classes]);
+  const [fileName, setFileName] = useState("");
+  const [parsing, setParsing] = useState(false);
+  const [error, setError] = useState("");
+  const [parsed, setParsed] = useState(null);
+  const [mode, setMode] = useState(existingCount > 0 ? "append" : "replace");
+
+  const handleFileChange = async e => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setError("");
+    setParsed(null);
+    setFileName(file.name);
+    setParsing(true);
+    try {
+      const sheet = await parseSpreadsheetFile(file);
+      const res = isStudents
+        ? parseStudentsFromRows(sheet.rows, classOpts)
+        : parseTeachersFromRows(sheet.rows, classOpts);
+      if (!res.records || res.records.length === 0) {
+        setError("ফাইলটি পড়া হয়েছে, কিন্তু কোনো বৈধ তথ্য (নামসহ সারি) পাওয়া যায়নি।");
+      } else {
+        setParsed(res);
+      }
+    } catch (err) {
+      setError((err && err.message) || "ফাইলটি পড়া যায়নি। অনুগ্রহ করে সঠিক Excel (.xlsx/.xls) বা CSV (.csv) ফাইল দিন।");
+    } finally {
+      setParsing(false);
+    }
+  };
+
+  return (
+    <div className="modal-bg" onClick={e => { if (e.target === e.currentTarget) close(); }}>
+      <div className="modal" style={{ maxWidth: 840 }}>
+        <h2>{isStudents ? "শিক্ষার্থী তালিকা আপলোড (Excel / CSV)" : "শিক্ষক তালিকা আপলোড (Excel / CSV)"}</h2>
+        <p className="sub">
+          {isStudents
+            ? "Excel (.xlsx, .xls) বা CSV (.csv) ফাইল আপলোড করলে সকল শিক্ষার্থী সাথে সাথে ওয়েবসাইটের শিক্ষার্থী তালিকায় দেখাবে।"
+            : "Excel (.xlsx, .xls) বা CSV (.csv) ফাইল আপলোড করলে সকল শিক্ষক ওয়েবসাইটের শিক্ষক তালিকায় এবং পাবলিক ওয়েবসাইটে দেখাবে।"}
+        </p>
+
+        <div className="note-box" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 0, marginBottom: 14 }}>
+          <div style={{ fontSize: "13px" }}>
+            <b>সহজ নমুনা ফাইল:</b> বাংলা বা ইংরেজি হেডারসহ{" "}
+            {isStudents
+              ? "নাম, শ্রেণি, রোল, শাখা, অভিভাবক, মোবাইল, জমা"
+              : "শিক্ষকের নাম, কোড, পদবি, বিষয়, যোগ্যতা, মোবাইল, শ্রেণি শিক্ষক, মাসিক বেতন"}{" "}
+            কলাম ব্যবহার করুন।
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button type="button" className="mini-btn" onClick={() => downloadBulkTemplate(type, "xlsx")}>⬇ নমুনা Excel (.xlsx)</button>
+            <button type="button" className="mini-btn" onClick={() => downloadBulkTemplate(type, "csv")}>⬇ নমুনা CSV (.csv)</button>
+          </div>
+        </div>
+
+        <label style={{ display: "block", marginBottom: 6 }}>Excel বা CSV ফাইল নির্বাচন করুন (.xlsx, .xls, .csv)</label>
+        <input type="file" accept=".xlsx,.xls,.csv,.tsv" onChange={handleFileChange} style={{ marginBottom: 12 }} />
+
+        {parsing && <div className="note-box">ফাইল পড়া হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন…</div>}
+        {error && <div className="note-box" style={{ borderColor: "var(--danger)", color: "var(--danger)", background: "#fff5f5" }}>{error}</div>}
+
+        {parsed && (
+          <div style={{ marginTop: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+              <div>
+                <span className="pill pill-ok">ফাইল: {fileName}</span>{" "}
+                <span className="pill pill-ok">শনাক্ত হয়েছে: {toBnNum(parsed.records.length)} জন</span>
+                {parsed.skipped > 0 && <span className="pill pill-warn" style={{ marginLeft: 6 }}>বাদ পড়েছে: {toBnNum(parsed.skipped)} সারি</span>}
+              </div>
+              {existingCount > 0 && (
+                <div style={{ display: "flex", gap: 12, flexWrap: "wrap", fontSize: "13.5px" }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 5, margin: 0, cursor: "pointer" }}>
+                    <input type="radio" name="bulkImportMode" checked={mode === "append"} onChange={() => setMode("append")} style={{ width: "auto" }} />
+                    আগের তালিকার সাথে যোগ করুন
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 5, margin: 0, cursor: "pointer" }}>
+                    <input type="radio" name="bulkImportMode" checked={mode === "replace"} onChange={() => setMode("replace")} style={{ width: "auto" }} />
+                    আগের তালিকা বদলে নতুন বসান
+                  </label>
+                </div>
+              )}
+            </div>
+
+            <div className="table-wrap" style={{ maxHeight: 280, overflowY: "auto", marginBottom: 14 }}>
+              <table>
+                <thead>
+                  {isStudents
+                    ? <tr><th>#</th><th>নাম</th><th>শ্রেণি</th><th>রোল</th><th>শাখা</th><th>অভিভাবক</th><th>মোবাইল</th><th>জমা</th></tr>
+                    : <tr><th>#</th><th>নাম</th><th>কোড</th><th>পদবি</th><th>বিষয়</th><th>যোগ্যতা</th><th>মোবাইল</th><th>শ্রেণি শিক্ষক</th><th>বেতন</th></tr>}
+                </thead>
+                <tbody>
+                  {parsed.records.slice(0, 60).map((r, i) => isStudents ? (
+                    <tr key={i}>
+                      <td>{toBnNum(i + 1)}</td>
+                      <td><b>{r.name}</b></td>
+                      <td>{r.cls}</td>
+                      <td>{toBnNum(r.roll)}</td>
+                      <td>{r.section}</td>
+                      <td>{r.guardian || "—"}</td>
+                      <td>{r.phone || "—"}</td>
+                      <td>{taka(r.paid)}</td>
+                    </tr>
+                  ) : (
+                    <tr key={i}>
+                      <td>{toBnNum(i + 1)}</td>
+                      <td><b>{r.name}</b></td>
+                      <td>{r.teacherCode || "স্বয়ংক্রিয়"}</td>
+                      <td>{r.designation}</td>
+                      <td>{r.subject}</td>
+                      <td>{r.qualification}</td>
+                      <td>{r.phone}</td>
+                      <td>{r.classTeacherClass ? `${r.classTeacherClass} (${r.classTeacherSection || "ক"})` : "—"}</td>
+                      <td>{taka(r.monthlySalary)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {parsed.records.length > 60 && (
+              <div style={{ fontSize: "12.5px", color: "var(--muted)", marginBottom: 10 }}>
+                প্রিভিউতে প্রথম ৬০ জন দেখানো হয়েছে; সংরক্ষণ করলে সব {toBnNum(parsed.records.length)} জন যুক্ত হবে।
+              </div>
+            )}
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 9, marginTop: 14, flexWrap: "wrap" }}>
+          <button
+            type="button"
+            className="btn btn-brand"
+            style={{ flex: 1 }}
+            disabled={!parsed || !parsed.records || parsed.records.length === 0}
+            onClick={() => parsed && onImport(parsed.records, mode)}
+          >
+            {parsed ? `✓ ${toBnNum(parsed.records.length)} জন ওয়েবসাইটে যোগ করুন` : "প্রথমে ফাইল নির্বাচন করুন"}
+          </button>
+          <button type="button" className="btn btn-ghost" onClick={close}>বাতিল</button>
+        </div>
+      </div>
+    </div>
   );
 }
 function ClassForm({ initial, close, save }) {
