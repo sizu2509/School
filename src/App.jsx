@@ -2508,13 +2508,31 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
         : `${scopeLabel}আরও ${toBnNum(nextStudents.length)} জন শিক্ষার্থী যুক্ত হয়েছে`
     );
   };
-  const importBulkTeachers = (records, mode) => {
+  const importBulkTeachers = (records, mode, targetClass, targetSubject) => {
     const cleanRows = (records || []).filter(r => r && r.name && r.name.trim());
     if (cleanRows.length === 0) return;
+    const fixedClass = targetClass && targetClass !== "__AUTO__" ? targetClass : "";
+    const fixedSubject = targetSubject && targetSubject !== "__AUTO__" ? targetSubject : "";
     const normalizedAdded = cleanRows.map((r, idx) => {
       const nid = uid();
       const codeFallback = r.teacherCode || ("TCH-" + String(200 + idx + 1));
-      return normalizeTeacherRecord({ ...r, id: nid, teacherCode: codeFallback }, true);
+      const nextSub = fixedSubject || r.subject || "সাধারণ";
+      const baseClasses = Array.isArray(r.teachingClasses) ? r.teachingClasses : [];
+      const nextClasses = fixedClass && !baseClasses.includes(fixedClass)
+        ? [fixedClass, ...baseClasses]
+        : baseClasses;
+      const baseExtra = Array.isArray(r.additionalSubjects) ? r.additionalSubjects.filter(s => s && s !== nextSub) : [];
+      if (fixedSubject && r.subject && r.subject !== fixedSubject && !baseExtra.includes(r.subject)) {
+        baseExtra.unshift(r.subject);
+      }
+      return normalizeTeacherRecord({
+        ...r,
+        id: nid,
+        teacherCode: codeFallback,
+        subject: nextSub,
+        additionalSubjects: baseExtra,
+        teachingClasses: nextClasses,
+      }, true);
     });
     const isReplace = mode === "replace";
     const baseList = isReplace
@@ -2538,13 +2556,15 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
     });
     patch({ teachers: merged });
     setTeacherSearch("");
-    setTeacherSubFilter("সব");
-    setTeacherClassFilter("সব");
+    setTeacherSubFilter(fixedSubject || "সব");
+    setTeacherClassFilter(fixedClass || "সব");
     setBulkImportType(null);
+    const scopeParts = [fixedClass ? `${fixedClass} শ্রেণি` : "", fixedSubject ? `${fixedSubject} বিষয়` : ""].filter(Boolean);
+    const scopeLabel = scopeParts.length ? `${scopeParts.join(" · ")}-এ ` : "";
     toast(
       isReplace
-        ? `${toBnNum(normalizedAdded.length)} জন শিক্ষকের নতুন তালিকা ওয়েবসাইটে যুক্ত হয়েছে`
-        : `তালিকায় আরও ${toBnNum(normalizedAdded.length)} জন শিক্ষক যুক্ত হয়েছে`
+        ? `${scopeLabel}${toBnNum(normalizedAdded.length)} জন শিক্ষকের নতুন তালিকা ওয়েবসাইটে যুক্ত হয়েছে`
+        : `${scopeLabel}আরও ${toBnNum(normalizedAdded.length)} জন শিক্ষক যুক্ত হয়েছে`
     );
   };
   const studentSectionOptions = useMemo(() => {
@@ -6026,13 +6046,15 @@ function Console({ data, setData, user, authToken, logout, goLanding, toast, ini
         <BulkImportModal
           type={bulkImportType}
           classes={data.classes}
-          defaultClass={studentClassFilter}
+          allSubjects={allSchoolSubjectNames}
+          defaultClass={bulkImportType === "students" ? studentClassFilter : teacherClassFilter}
           defaultSection={studentSectionFilter}
+          defaultSubject={teacherSubFilter}
           existingCount={bulkImportType === "students" ? (data.students || []).length : (data.teachers || []).length}
           close={() => setBulkImportType(null)}
-          onImport={(records, mode, targetClass, targetSection) => {
-            if (bulkImportType === "students") importBulkStudents(records, mode, targetClass, targetSection);
-            else importBulkTeachers(records, mode);
+          onImport={(records, mode, arg1, arg2) => {
+            if (bulkImportType === "students") importBulkStudents(records, mode, arg1, arg2);
+            else importBulkTeachers(records, mode, arg1, arg2);
           }}
         />
       )}
@@ -6363,24 +6385,29 @@ function StudentForm({ initial, classes, close, save, costTypes, showCost, exist
     </ModalForm>
   );
 }
-function BulkImportModal({ type, classes, defaultClass, defaultSection, existingCount, close, onImport }) {
+function BulkImportModal({ type, classes, allSubjects, defaultClass, defaultSection, defaultSubject, existingCount, close, onImport }) {
   const isStudents = type === "students";
   const classOpts = useMemo(() => classOptionsOf({ classes }), [classes]);
+  const subjectOpts = useMemo(() => Array.isArray(allSubjects) ? allSubjects.filter(Boolean) : [], [allSubjects]);
   const sectionsFor = clsName => {
     if (!clsName || clsName === "__AUTO__") return ["ক"];
     const matched = (classes || []).find(c => c.name === clsName);
     return matched ? normalizeClassSections(matched).map(s => s.name) : defaultSectionNamesForClass(clsName);
   };
-  const initCls = (defaultClass && defaultClass !== "সব" && classOpts.includes(defaultClass))
-    ? defaultClass
-    : (classOpts[0] || "ষষ্ঠ");
+  const initCls = isStudents
+    ? ((defaultClass && defaultClass !== "সব" && classOpts.includes(defaultClass)) ? defaultClass : (classOpts[0] || "ষষ্ঠ"))
+    : ((defaultClass && defaultClass !== "সব" && classOpts.includes(defaultClass)) ? defaultClass : "__AUTO__");
   const initSecOpts = sectionsFor(initCls);
   const initSec = (defaultSection && defaultSection !== "সব" && initSecOpts.includes(defaultSection))
     ? defaultSection
     : (initSecOpts[0] || "ক");
+  const initSub = (!isStudents && defaultSubject && defaultSubject !== "সব" && subjectOpts.includes(defaultSubject))
+    ? defaultSubject
+    : "__AUTO__";
 
   const [targetClass, setTargetClass] = useState(initCls);
   const [targetSection, setTargetSection] = useState(initSec);
+  const [targetSubject, setTargetSubject] = useState(initSub);
   const [fileName, setFileName] = useState("");
   const [parsing, setParsing] = useState(false);
   const [error, setError] = useState("");
@@ -6390,7 +6417,7 @@ function BulkImportModal({ type, classes, defaultClass, defaultSection, existing
   const secOpts = sectionsFor(targetClass);
   const onTargetClassChange = nextCls => {
     setTargetClass(nextCls);
-    if (nextCls === "__AUTO__") return;
+    if (!isStudents || nextCls === "__AUTO__") return;
     const nextSecs = sectionsFor(nextCls);
     if (!nextSecs.includes(targetSection)) {
       setTargetSection(nextSecs[0] || "ক");
@@ -6408,7 +6435,7 @@ function BulkImportModal({ type, classes, defaultClass, defaultSection, existing
       const sheet = await parseSpreadsheetFile(file);
       const res = isStudents
         ? parseStudentsFromRows(sheet.rows, classOpts, { targetClass, targetSection })
-        : parseTeachersFromRows(sheet.rows, classOpts);
+        : parseTeachersFromRows(sheet.rows, classOpts, { targetClass, targetSubject });
       if (!res.records || res.records.length === 0) {
         setError("ফাইলটি পড়া হয়েছে, কিন্তু কোনো বৈধ তথ্য (নামসহ সারি) পাওয়া যায়নি।");
       } else {
@@ -6423,13 +6450,23 @@ function BulkImportModal({ type, classes, defaultClass, defaultSection, existing
 
   const previewRecords = useMemo(() => {
     if (!parsed || !parsed.records) return [];
-    if (!isStudents || targetClass === "__AUTO__") return parsed.records;
-    return parsed.records.map(r => ({
-      ...r,
-      cls: targetClass,
-      section: targetSection || r.section || "ক",
-    }));
-  }, [parsed, isStudents, targetClass, targetSection]);
+    if (isStudents) {
+      if (targetClass === "__AUTO__") return parsed.records;
+      return parsed.records.map(r => ({
+        ...r,
+        cls: targetClass,
+        section: targetSection || r.section || "ক",
+      }));
+    }
+    return parsed.records.map(r => {
+      const nextSub = targetSubject !== "__AUTO__" ? targetSubject : r.subject;
+      const baseCls = Array.isArray(r.teachingClasses) ? r.teachingClasses : [];
+      const nextCls = targetClass !== "__AUTO__" && !baseCls.includes(targetClass)
+        ? [targetClass, ...baseCls]
+        : baseCls;
+      return { ...r, subject: nextSub, teachingClasses: nextCls };
+    });
+  }, [parsed, isStudents, targetClass, targetSection, targetSubject]);
 
   return (
     <div className="modal-bg" onClick={e => { if (e.target === e.currentTarget) close(); }}>
@@ -6438,10 +6475,10 @@ function BulkImportModal({ type, classes, defaultClass, defaultSection, existing
         <p className="sub">
           {isStudents
             ? "প্রথমে শ্রেণি ও শাখা নির্বাচন করুন, এরপর বাংলা বা ইংরেজি ফরম্যাটের Excel (.xlsx, .xls) বা CSV (.csv) ফাইল আপলোড করলে তালিকাটি নির্বাচিত শ্রেণিতে যোগ হবে।"
-            : "Excel (.xlsx, .xls) বা CSV (.csv) ফাইল আপলোড করলে সকল শিক্ষক ওয়েবসাইটের শিক্ষক তালিকায় এবং পাবলিক ওয়েবসাইটে দেখাবে।"}
+            : "চাইলে শ্রেণি ও মূল বিষয় নির্বাচন করুন (অথবা ফাইল অনুযায়ী রাখুন), এরপর বাংলা বা ইংরেজি ফরম্যাটের Excel (.xlsx, .xls) বা CSV (.csv) ফাইল আপলোড করলে তালিকাটি ওয়েবসাইটে যুক্ত হবে।"}
         </p>
 
-        {isStudents && (
+        {isStudents ? (
           <div className="form-grid" style={{ marginBottom: 14 }}>
             <Field label="১. শ্রেণি নির্বাচন করুন *">
               <select value={targetClass} onChange={e => onTargetClassChange(e.target.value)}>
@@ -6461,6 +6498,21 @@ function BulkImportModal({ type, classes, defaultClass, defaultSection, existing
               )}
             </Field>
           </div>
+        ) : (
+          <div className="form-grid" style={{ marginBottom: 14 }}>
+            <Field label="১. শ্রেণি নির্বাচন করুন (পাঠদানের শ্রেণি)">
+              <select value={targetClass} onChange={e => setTargetClass(e.target.value)}>
+                <option value="__AUTO__">ফাইলের শ্রেণি অনুযায়ী (স্বয়ংক্রিয়)</option>
+                {classOpts.map(c => <option key={c} value={c}>{c} শ্রেণি</option>)}
+              </select>
+            </Field>
+            <Field label="২. মূল বিষয় নির্বাচন করুন">
+              <select value={targetSubject} onChange={e => setTargetSubject(e.target.value)}>
+                <option value="__AUTO__">ফাইলের বিষয় অনুযায়ী (স্বয়ংক্রিয়)</option>
+                {subjectOpts.map(sub => <option key={sub} value={sub}>{sub}</option>)}
+              </select>
+            </Field>
+          </div>
         )}
 
         <div className="note-box" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 0, marginBottom: 14 }}>
@@ -6468,16 +6520,16 @@ function BulkImportModal({ type, classes, defaultClass, defaultSection, existing
             <b>সহজ নমুনা ফাইল:</b> বাংলা বা ইংরেজি ফরম্যাটে{" "}
             {isStudents
               ? "নাম (Name), রোল (Roll), অভিভাবক (Guardian), মোবাইল (Phone), জমা (Paid) কলাম ব্যবহার করুন।"
-              : "শিক্ষকের নাম, কোড, পদবি, বিষয়, যোগ্যতা, মোবাইল, শ্রেণি শিক্ষক, মাসিক বেতন কলাম ব্যবহার করুন।"}
+              : "শিক্ষকের নাম (Name), কোড (Code), পদবি (Designation), বিষয় (Subject), যোগ্যতা (Qualification), মোবাইল (Phone), শ্রেণি শিক্ষক (Class Teacher), বেতন (Salary) কলাম ব্যবহার করুন।"}
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <button type="button" className="mini-btn" onClick={() => downloadBulkTemplate(type, "xlsx", targetClass, targetSection)}>⬇ নমুনা Excel (.xlsx)</button>
-            <button type="button" className="mini-btn" onClick={() => downloadBulkTemplate(type, "csv", targetClass, targetSection)}>⬇ নমুনা CSV (.csv)</button>
+            <button type="button" className="mini-btn" onClick={() => downloadBulkTemplate(type, "xlsx", targetClass, targetSection, targetSubject)}>⬇ নমুনা Excel (.xlsx)</button>
+            <button type="button" className="mini-btn" onClick={() => downloadBulkTemplate(type, "csv", targetClass, targetSection, targetSubject)}>⬇ নমুনা CSV (.csv)</button>
           </div>
         </div>
 
         <label style={{ display: "block", marginBottom: 6 }}>
-          {isStudents ? "৩. Excel বা CSV ফাইল নির্বাচন করুন (.xlsx, .xls, .csv)" : "Excel বা CSV ফাইল নির্বাচন করুন (.xlsx, .xls, .csv)"}
+          ৩. Excel বা CSV ফাইল নির্বাচন করুন (.xlsx, .xls, .csv)
         </label>
         <input type="file" accept=".xlsx,.xls,.csv,.tsv" onChange={handleFileChange} style={{ marginBottom: 12 }} />
 
@@ -6492,6 +6544,11 @@ function BulkImportModal({ type, classes, defaultClass, defaultSection, existing
                 <span className="pill pill-ok">শনাক্ত হয়েছে: {toBnNum(previewRecords.length)} জন</span>
                 {isStudents && targetClass !== "__AUTO__" && (
                   <span className="pill pill-ok" style={{ marginLeft: 6 }}>লক্ষ্য: {targetClass} ({targetSection})</span>
+                )}
+                {!isStudents && (targetClass !== "__AUTO__" || targetSubject !== "__AUTO__") && (
+                  <span className="pill pill-ok" style={{ marginLeft: 6 }}>
+                    লক্ষ্য: {[targetClass !== "__AUTO__" ? `${targetClass} শ্রেণি` : "", targetSubject !== "__AUTO__" ? targetSubject : ""].filter(Boolean).join(" · ")}
+                  </span>
                 )}
                 {parsed.skipped > 0 && <span className="pill pill-warn" style={{ marginLeft: 6 }}>বাদ পড়েছে: {toBnNum(parsed.skipped)} সারি</span>}
               </div>
@@ -6516,7 +6573,7 @@ function BulkImportModal({ type, classes, defaultClass, defaultSection, existing
                 <thead>
                   {isStudents
                     ? <tr><th>#</th><th>নাম</th><th>শ্রেণি</th><th>রোল</th><th>শাখা</th><th>অভিভাবক</th><th>মোবাইল</th><th>জমা</th></tr>
-                    : <tr><th>#</th><th>নাম</th><th>কোড</th><th>পদবি</th><th>বিষয়</th><th>যোগ্যতা</th><th>মোবাইল</th><th>শ্রেণি শিক্ষক</th><th>বেতন</th></tr>}
+                    : <tr><th>#</th><th>নাম</th><th>কোড</th><th>পদবি</th><th>বিষয়</th><th>ক্লাস নেন</th><th>যোগ্যতা</th><th>মোবাইল</th><th>বেতন</th></tr>}
                 </thead>
                 <tbody>
                   {previewRecords.slice(0, 60).map((r, i) => isStudents ? (
@@ -6537,9 +6594,9 @@ function BulkImportModal({ type, classes, defaultClass, defaultSection, existing
                       <td>{r.teacherCode || "স্বয়ংক্রিয়"}</td>
                       <td>{r.designation}</td>
                       <td>{r.subject}</td>
+                      <td>{(r.teachingClasses || []).join(", ") || "—"}</td>
                       <td>{r.qualification}</td>
                       <td>{r.phone}</td>
-                      <td>{r.classTeacherClass ? `${r.classTeacherClass} (${r.classTeacherSection || "ক"})` : "—"}</td>
                       <td>{taka(r.monthlySalary)}</td>
                     </tr>
                   ))}
@@ -6560,7 +6617,7 @@ function BulkImportModal({ type, classes, defaultClass, defaultSection, existing
             className="btn btn-brand"
             style={{ flex: 1 }}
             disabled={!parsed || previewRecords.length === 0}
-            onClick={() => parsed && onImport(previewRecords, mode, targetClass, targetSection)}
+            onClick={() => parsed && onImport(previewRecords, mode, targetClass, isStudents ? targetSection : targetSubject)}
           >
             {parsed
               ? (isStudents && targetClass !== "__AUTO__"

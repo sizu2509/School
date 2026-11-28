@@ -116,22 +116,22 @@ const STUDENT_HEADER_ALIASES = {
 };
 
 const TEACHER_HEADER_ALIASES = {
-  name: ["নাম", "শিক্ষকের নাম", "teacher name", "name", "full name"],
-  teacherCode: ["কোড", "শিক্ষক কোড", "টিচার কোড", "আইডি", "teacher code", "code", "teacher id", "emp id"],
+  name: ["নাম", "শিক্ষকের নাম", "শিক্ষক", "শিক্ষিকা", "teacher name", "name of teacher", "teacher's name", "teacher", "instructor", "lecturer", "name", "full name"],
+  teacherCode: ["কোড", "শিক্ষক কোড", "টিচার কোড", "আইডি", "teacher code", "code", "teacher id", "emp id", "id", "sl", "sl no"],
   shortCode: ["সংক্ষিপ্ত কোড", "শর্ট কোড", "short code", "shortcode", "initials"],
   designation: ["পদবি", "পদবী", "designation", "post", "position", "role", "title"],
-  subject: ["বিষয়", "বিষয়", "মূল বিষয়", "মূল বিষয়", "পাঠদানের বিষয়", "subject", "main subject", "primary subject"],
+  subject: ["বিষয়", "বিষয়", "মূল বিষয়", "মূল বিষয়", "পাঠদানের বিষয়", "subject", "subject name", "main subject", "primary subject"],
   additionalSubjects: ["অতিরিক্ত বিষয়", "অতিরিক্ত বিষয়", "অন্যান্য বিষয়", "অন্যান্য বিষয়", "বরাদ্দকৃত বিষয়", "additional subjects", "extra subjects", "other subjects", "subjects"],
   qualification: ["যোগ্যতা", "শিক্ষাগত যোগ্যতা", "ডিগ্রি", "qualification", "education", "degree"],
-  phone: ["মোবাইল", "ফোন", "মোবাইল নং", "ফোন নম্বর", "যোগাযোগ", "phone", "mobile", "contact", "phone number"],
+  phone: ["মোবাইল", "ফোন", "মোবাইল নং", "ফোন নম্বর", "যোগাযোগ", "phone", "phone no", "phone no.", "mobile", "mobile no", "mobile no.", "contact", "phone number", "cell"],
   email: ["ইমেইল", "ই-মেইল", "email", "e mail", "mail"],
   bloodGroup: ["রক্তের গ্রুপ", "ব্লাড গ্রুপ", "blood group", "blood"],
   address: ["ঠিকানা", "address", "location"],
-  joinDate: ["যোগদানের তারিখ", "যোগদান", "joining date", "join date", "joined"],
+  joinDate: ["যোগদানের তারিখ", "যোগদান", "joining date", "join date", "joined", "joining"],
   classTeacherClass: ["শ্রেণি শিক্ষক", "শ্রেণী শিক্ষক", "দায়িত্বপ্রাপ্ত শ্রেণি", "class teacher", "class teacher class"],
-  classTeacherSection: ["শ্রেণি শিক্ষকের শাখা", "দায়িত্বপ্রাপ্ত শাখা", "class teacher section"],
-  teachingClasses: ["ক্লাস নেন", "পাঠদানের শ্রেণি", "বরাদ্দকৃত শ্রেণি", "শ্রেণিসমূহ", "teaching classes", "classes"],
-  monthlySalary: ["বেতন", "মূল বেতন", "মাসিক বেতন", "salary", "basic salary", "monthly salary"],
+  classTeacherSection: ["শ্রেণি শিক্ষকের শাখা", "দায়িত্বপ্রাপ্ত শাখা", "class teacher section", "শাখা", "section"],
+  teachingClasses: ["ক্লাস নেন", "পাঠদানের শ্রেণি", "বরাদ্দকৃত শ্রেণি", "শ্রেণিসমূহ", "শ্রেণি", "শ্রেণী", "teaching classes", "classes", "class"],
+  monthlySalary: ["বেতন", "মূল বেতন", "মাসিক বেতন", "salary", "basic", "basic salary", "monthly salary"],
   monthlyAllowance: ["ভাতা", "মাসিক ভাতা", "allowance", "monthly allowance"],
   status: ["অবস্থা", "স্ট্যাটাস", "status"],
 };
@@ -297,17 +297,46 @@ export function parseStudentsFromRows(rows, availableClasses = [], optionsOrPaya
   };
 }
 
-export function parseTeachersFromRows(rows, availableClasses = []) {
+export function parseTeachersFromRows(rows, availableClasses = [], options = {}) {
+  const opts = options || {};
+  const fixedClass = opts.targetClass && opts.targetClass !== "__AUTO__" ? opts.targetClass : "";
+  const fixedSubject = opts.targetSubject && opts.targetSubject !== "__AUTO__" ? opts.targetSubject : "";
+
   const { headerIdx, matchedColumns } = detectHeaderRowIndex(rows, TEACHER_HEADER_ALIASES);
+  let startRowIdx = headerIdx + 1;
+  let colMap = [];
+
   if (matchedColumns <= 0) {
-    throw new Error("কলামের শিরোনাম চেনা যায়নি। দয়া করে 'নাম', 'বিষয়', 'পদবি', 'মোবাইল', 'যোগ্যতা' কলাম রাখুন অথবা নমুনা ফাইল ডাউনলোড করুন।");
+    const firstNonEmpty = rows.findIndex(r => Array.isArray(r) && r.some(v => String(v == null ? "" : v).trim() !== ""));
+    if (firstNonEmpty < 0) {
+      throw new Error("ফাইলে কোনো শিক্ষকের তথ্য পাওয়া যায়নি।");
+    }
+    const sampleRow = rows[firstNonEmpty] || [];
+    const col0Text = String(sampleRow[0] == null ? "" : sampleRow[0]).trim();
+    const col1Text = String(sampleRow[1] == null ? "" : sampleRow[1]).trim();
+    const col0IsSerialOrCode = /^\d+$/.test(bnToEnDigits(col0Text)) || /^TCH[-_]?\d+$/i.test(col0Text);
+    if (col0IsSerialOrCode && col1Text) {
+      colMap = ["teacherCode", "name", "subject", "phone"];
+      startRowIdx = firstNonEmpty;
+    } else if (col0Text) {
+      colMap = ["name", "subject", "designation", "phone"];
+      startRowIdx = firstNonEmpty;
+    } else {
+      throw new Error("কলামের শিরোনাম চেনা যায়নি। দয়া করে 'নাম' / 'Name', 'বিষয়' / 'Subject', 'পদবি' / 'Designation', 'মোবাইল' / 'Phone' কলাম রাখুন অথবা নমুনা ফাইল ডাউনলোড করুন।");
+    }
+  } else {
+    const headerRow = rows[headerIdx] || [];
+    colMap = headerRow.map(h => resolveFieldKey(h, TEACHER_HEADER_ALIASES));
+    if (!colMap.includes("name")) {
+      const firstEmptyOrUnknown = colMap.findIndex(k => !k);
+      if (firstEmptyOrUnknown >= 0) colMap[firstEmptyOrUnknown] = "name";
+    }
   }
-  const headerRow = rows[headerIdx] || [];
-  const colMap = headerRow.map(h => resolveFieldKey(h, TEACHER_HEADER_ALIASES));
+
   const records = [];
   let skipped = 0;
 
-  for (let i = headerIdx + 1; i < rows.length; i++) {
+  for (let i = startRowIdx; i < rows.length; i++) {
     const row = Array.isArray(rows[i]) ? rows[i] : [];
     const hasAny = row.some(v => String(v == null ? "" : v).trim() !== "");
     if (!hasAny) continue;
@@ -323,11 +352,15 @@ export function parseTeachersFromRows(rows, availableClasses = []) {
       continue;
     }
 
-    const subject = String(rawObj.subject == null ? "" : rawObj.subject).trim() || "সাধারণ";
+    const fileSubject = String(rawObj.subject == null ? "" : rawObj.subject).trim();
+    const subject = fixedSubject || fileSubject || "সাধারণ";
     const additionalSubjects = String(rawObj.additionalSubjects == null ? "" : rawObj.additionalSubjects)
       .split(/[,;|/]+/)
       .map(s => s.trim())
       .filter(s => s && s !== subject);
+    if (fixedSubject && fileSubject && fileSubject !== fixedSubject && !additionalSubjects.includes(fileSubject)) {
+      additionalSubjects.unshift(fileSubject);
+    }
 
     let ctRaw = String(rawObj.classTeacherClass == null ? "" : rawObj.classTeacherClass).trim();
     let ctSec = normalizeSectionValue(rawObj.classTeacherSection);
@@ -345,6 +378,9 @@ export function parseTeachersFromRows(rows, availableClasses = []) {
       .filter(Boolean);
     if (classTeacherClass && !teachingClasses.includes(classTeacherClass)) {
       teachingClasses = [classTeacherClass, ...teachingClasses];
+    }
+    if (fixedClass && !teachingClasses.includes(fixedClass)) {
+      teachingClasses = [fixedClass, ...teachingClasses];
     }
 
     const joinDate = normalizeDateCell(rawObj.joinDate) || "2022-01-05";
@@ -381,10 +417,11 @@ export function parseTeachersFromRows(rows, availableClasses = []) {
   };
 }
 
-export function downloadBulkTemplate(type, format = "xlsx", targetClass = "", targetSection = "") {
+export function downloadBulkTemplate(type, format = "xlsx", targetClass = "", targetSection = "", targetSubject = "") {
   const isStudents = type === "students";
   const sampleCls = targetClass && targetClass !== "__AUTO__" ? targetClass : "ষষ্ঠ";
   const sampleSec = targetClass && targetClass !== "__AUTO__" && targetSection && targetSection !== "__AUTO__" ? targetSection : "ক";
+  const sampleSub = targetSubject && targetSubject !== "__AUTO__" ? targetSubject : "";
   const aoa = isStudents
     ? [
         ["নাম", "শ্রেণি", "রোল", "শাখা", "অভিভাবক", "মোবাইল", "জমা"],
@@ -394,9 +431,9 @@ export function downloadBulkTemplate(type, format = "xlsx", targetClass = "", ta
       ]
     : [
         ["শিক্ষকের নাম", "কোড", "পদবি", "বিষয়", "অতিরিক্ত বিষয়", "যোগ্যতা", "মোবাইল", "শ্রেণি শিক্ষক", "ক্লাস নেন", "মাসিক বেতন", "মাসিক ভাতা", "যোগদানের তারিখ"],
-        ["ড. মাহবুবুল আলম", "TCH-201", "সিনিয়র শিক্ষক", "বাংলা", "বাংলা সাহিত্য", "পিএইচডি / এমএ (বাংলা)", "01711223344", "ষষ্ঠ (ক)", "ষষ্ঠ, সপ্তম, অষ্টম", "32000", "5500", "2019-02-01"],
-        ["ফারহানা ইয়াসমিন", "TCH-202", "সহকারী শিক্ষক", "ইংরেজি", "English Grammar", "এমএ (ইংরেজি)", "01811223355", "সপ্তম (ক)", "সপ্তম, অষ্টম, নবম", "28000", "4500", "2021-01-10"],
-        ["মোঃ তানভীর আহমেদ", "TCH-203", "সহকারী শিক্ষক", "গণিত", "উচ্চতর গণিত", "এমএসসি (গণিত)", "01911223366", "", "অষ্টম, নবম, দশম", "29000", "5000", "2020-06-15"],
+        ["ড. মাহবুবুল আলম", "TCH-201", "সিনিয়র শিক্ষক", sampleSub || "বাংলা", "বাংলা সাহিত্য", "পিএইচডি / এমএ (বাংলা)", "01711223344", `${sampleCls} (${sampleSec})`, targetClass && targetClass !== "__AUTO__" ? sampleCls : "ষষ্ঠ, সপ্তম, অষ্টম", "32000", "5500", "2019-02-01"],
+        ["ফারহানা ইয়াসমিন", "TCH-202", "সহকারী শিক্ষক", sampleSub || "ইংরেজি", "English Grammar", "এমএ (ইংরেজি)", "01811223355", "", targetClass && targetClass !== "__AUTO__" ? sampleCls : "সপ্তম, অষ্টম, নবম", "28000", "4500", "2021-01-10"],
+        ["মোঃ তানভীর আহমেদ", "TCH-203", "সহকারী শিক্ষক", sampleSub || "গণিত", "উচ্চতর গণিত", "এমএসসি (গণিত)", "01911223366", "", targetClass && targetClass !== "__AUTO__" ? sampleCls : "অষ্টম, নবম, দশম", "29000", "5000", "2020-06-15"],
       ];
 
   const ws = XLSX.utils.aoa_to_sheet(aoa);
